@@ -2,7 +2,7 @@ organization := "com.bnd"
 
 name := "ehr-ohdsi-processor"
 
-version := "0.0.2"
+version := "0.0.3"
 
 scalaVersion := "2.12.10" ///"2.11.12"
 
@@ -22,7 +22,7 @@ mainClass in assembly := Some("com.bnd.ehrop.CalcFeatures")
 assemblyMergeStrategy in assembly := {
 //  case PathList("versionchanges.txt") => MergeStrategy.discard
 //  case PathList("tessdata/") => MergeStrategy.discard
-  case PathList("org", "joda", "time", "base", "BaseDateTime.class") => MergeStrategy.first
+//  case PathList("org", "joda", "time", "base", "BaseDateTime.class") => MergeStrategy.first
   case x =>
     val oldStrategy = (assemblyMergeStrategy in assembly).value
     oldStrategy(x)

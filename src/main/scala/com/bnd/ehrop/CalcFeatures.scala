@@ -21,12 +21,16 @@ object CalcFeatures extends App with CalcFullFeaturesHelper {
     System.exit(1)
   }
 
-  private val outputPath = get("o").getOrElse {
-    logger.warn(s"The output path '-o=' not specified. Using the input path '${inputPath.get}' for the output.")
-    inputPath.get
+  private val outputFileName = get("o")
+
+  // check if the input path exists
+  fileExistsOrError(inputPath.get)
+
+  if (outputFileName.isEmpty) {
+    logger.warn(s"The output file '-o=' not specified. Using the input path '${inputPath.get}' with 'features.csv' for the output.")
   }
 
   def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 
-  calcAndExportFeatures(withBackslash(inputPath.get), Some(withBackslash(outputPath)))
+  calcAndExportFeatures(withBackslash(inputPath.get), outputFileName)
 }

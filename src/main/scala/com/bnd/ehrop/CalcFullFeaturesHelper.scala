@@ -3,7 +3,7 @@ package com.bnd.ehrop
 import java.util.{Calendar, Date}
 
 import akka.NotUsed
-import akka.stream.{ActorMaterializer, Materializer}
+import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Sink}
 import org.ada.server.akka.AkkaStreamUtil
 import com.bnd.ehrop.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
@@ -18,10 +18,17 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
 
   def calcAndExportFeatures(
     inputRootPath: String,
-    outputPath: Option[String] = None)(
+    outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     val dataPath = DataPath(inputRootPath)
+
+    // check mandatory files
+    fileExistsOrError(dataPath.person)
+    fileExistsOrError(dataPath.visit_occurrence)
+
+    // is a death file provided?
+    val hasDeathFile = fileExists(dataPath.death)
 
     for {
       visitEndDates <- personIdMaxDate(
@@ -53,14 +60,18 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
         (personId, (calendar.getTime.getTime, lastVisitDate.getTime))
       }.toMap
 
-      // calc death counts in 6 months
-      (_, deadCounts) <- personIdDateMilisCount(
-        dataPath.death, dateRangeIn6MonthsMap,
-        Table.death.death_date.toString, ""
-      )
-
-      // turn death counts into 'hasDied' flags
-      deadIn6MonthsPersonIds = deadCounts.filter(_._2 > 0).map(_._1).toSet
+      // calc death counts in 6 months and turn death counts into 'hasDied' flags
+      deadIn6MonthsPersonIds <-
+        if (hasDeathFile)
+          personIdDateMilisCount(
+            dataPath.death, dateRangeIn6MonthsMap,
+            Table.death.death_date.toString, ""
+          ) .map { case (_, deadCounts) =>
+            deadCounts.filter(_._2 > 0).map(_._1).toSet }
+        else {
+          logger.warn(s"Death file '${dataPath.death}' not found. Skipping.")
+          Future(Set[Int]())
+        }
 
       // calc stats for different the periods
       (countHeaders, personCountsMap) <- calcPersonIdDateMilisConceptCountsAllCustom(
@@ -70,7 +81,11 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
           dateRangeLast6MonthsMap,
           dateRangeIn6MonthsMap
         ),
-        Seq("before_last_visit", "up_to_6_months_before_last_visit", "up_to_6_months_after_last_visit")
+        Seq(
+          "before_last_visit",
+          "up_to_6_months_before_last_visit",
+          "up_to_6_months_after_last_visit"
+        )
       ).map { case (headers, results) =>
         logger.info(s"Date filtering with flows finished.")
         val newResults = results.map { case (personId, rawResults) =>
@@ -120,8 +135,8 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
               val visitEndDate = visitEndDates.get(personId)
               if (visitEndDate.isEmpty)
                 logger.warn(s"No end visit found for the person id ${personId}.")
-              val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
               val ageAtLastVisit = visitEndDate.map(endDate => (endDate.getTime - birthDate.getTime).toDouble / milisInYear)
+              val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
               val counts = personCountsMap.get(personId).getOrElse(Seq.fill(countFeatures)(0))
 
@@ -134,10 +149,11 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
                   ageAtLastVisit.getOrElse(""),
                   yearOfBirth.getOrElse(""),
                   monthOfBirth.getOrElse(""),
-                  visitEndDate.map(_.getTime).getOrElse(""),
-                  isDeadIn6Months
+                  visitEndDate.map(_.getTime).getOrElse("")
+                ) ++ (
+                  if (hasDeathFile) Seq(isDeadIn6Months) else Nil
                 ) ++ counts
-                ).mkString(",")
+              ).mkString(",")
             } catch {
               case e: Exception =>
                 logger.error(s"Problem found while processing a person table/csv at line: ${els.mkString(", ")}", e)
@@ -157,12 +173,13 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
           "age_at_last_visit",
           "year_of_birth",
           "month_of_birth",
-          "visit_end_date",
-          "died_6_months_after_last_visit"
+          "visit_end_date"
+        ) ++ (
+          if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
         ) ++ countHeaders
-        ).mkString(",")
+      ).mkString(",")
 
-      val outputFile = outputPath.getOrElse(inputRootPath) + "features.csv"
+      val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
       logger.info(s"Exporting results to '${outputFile}.")
       writeStringAsStream(header + "\n" + lines.mkString("\n"), new java.io.File(outputFile))
 
@@ -178,16 +195,21 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
   ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] = {
     val paths = ioDateConceptSpecs(rootPath)
 
-    val pathsWithOutputs = paths.map { case (path, dateColumn, conceptColumn, outputColName) =>
-      val outputCols = outputSuffixes.flatMap(suffix =>
-        Seq(
-          outputColName + "_count_" + suffix,
-          outputColName + "_count_distinct_" + suffix,
-          outputColName + "_" + conceptColumn + "_last_defined_" + suffix
+    val pathsWithOutputs = paths.flatMap { case (path, dateColumn, conceptColumn, outputColName) =>
+      if (fileExists(path)) {
+        val outputCols = outputSuffixes.flatMap(suffix =>
+          Seq(
+            outputColName + "_count_" + suffix,
+            outputColName + "_count_distinct_" + suffix,
+            outputColName + "_" + conceptColumn + "_last_defined_" + suffix
+          )
         )
-      )
 
-      (path, dateColumn, conceptColumn, outputCols)
+        Some((path, dateColumn, conceptColumn, outputCols))
+      } else {
+        logger.warn(s"File '${path}' does not exist. Skipping.")
+        None
+      }
     }
 
     val flows = () => {
@@ -282,4 +304,14 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
           outputColumnNames.zip(processedResults)
       }
   }
+
+  protected def fileExists(name: String) =
+    new java.io.File(name).exists
+
+  protected def fileExistsOrError(name: String) =
+    if (!fileExists(name)) {
+      val message = s"The input path '${name}' does not exist. Exiting."
+      logger.error(message)
+      System.exit(1)
+    }
 }
