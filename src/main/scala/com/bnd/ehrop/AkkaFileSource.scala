@@ -36,13 +36,37 @@ object AkkaFileSource {
     val source = fileSource(fileName, eol, allowTruncation)
 
     // skip head, split lines, and apply a given transformation
-    source.prefixAndTail(1).flatMapConcat { case (source, tail) =>
-      val header = source.head.split(delimiter, -1)
+    source.prefixAndTail(1).flatMapConcat { case (first, tail) =>
+      val header = first.head.split(delimiter, -1)
       val processEls = withHeaderTrans(header)
       tail.map { line =>
         val els = line.split(delimiter, -1)
         processEls(els)
       }
+    }
+  }
+
+  // keep the header
+  def csvAsStringSourceWithTransformAndHeader(
+    fileName: String,
+    withHeaderTrans: Array[String] => Array[String] => String,
+    delimiter: String = ",",
+    eol: String = "\n",
+    allowTruncation: Boolean = true
+  ): Source[String, _] = {
+    // file source
+    val source = fileSource(fileName, eol, allowTruncation)
+
+    // skip head, split lines, and apply a given transformation
+    source.prefixAndTail(1).flatMapConcat { case (first, tail) =>
+      val header = first.head.split(delimiter, -1)
+      val processEls = withHeaderTrans(header)
+      val processed = tail.map { line =>
+        val els = line.split(delimiter, -1)
+        processEls(els)
+      }
+
+      Source(first).concat(processed)
     }
   }
 

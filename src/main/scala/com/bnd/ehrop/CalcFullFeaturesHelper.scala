@@ -7,14 +7,99 @@ import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Sink}
 import org.ada.server.akka.AkkaStreamUtil
 import com.bnd.ehrop.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
+import com.bnd.ehrop.Table._
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
-trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
+trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
   private val countFeatures = 3 * 3 * 7
+
+  protected val outputSuffixes = Seq(
+    "before_last_visit",
+    "up_to_6_months_before_last_visit",
+    "up_to_6_months_after_last_visit"
+  )
+
+  protected def ioDateConceptSpecs(rootPath: String) = {
+    val dataPath = DataPath(rootPath)
+    Seq(
+      // visit_occurrence
+      (
+        dataPath.visit_occurrence,
+        visit_occurrence.visit_end_date.toString,
+        visit_occurrence.visit_concept_id.toString,
+        "visit_occurrence"
+      ),
+
+      // condition_occurrence
+      (
+        dataPath.condition_occurrence,
+        condition_occurrence.condition_start_date.toString,
+        condition_occurrence.condition_concept_id.toString,
+        "condition_occurrence"
+      ),
+
+      // observation_period
+      (
+        dataPath.observation_period,
+        observation_period.observation_period_end_date.toString,
+        observation_period.period_type_concept_id.toString,
+        "observation_period"
+      ),
+
+      // observation
+      (
+        dataPath.observation,
+        observation.observation_date.toString,
+        observation.observation_concept_id.toString,
+        "observation"
+      ),
+
+      // measurement
+      (
+        dataPath.measurement,
+        measurement.measurement_date.toString,
+        measurement.measurement_concept_id.toString,
+        "measurement"
+      ),
+
+      // procedure_occurrence
+      (
+        dataPath.procedure_occurrence,
+        procedure_occurrence.procedure_date.toString,
+        procedure_occurrence.procedure_concept_id.toString,
+        "procedure_occurrence"
+      ),
+
+      // drug_exposure
+      (
+        dataPath.drug_exposure,
+        drug_exposure.drug_exposure_start_date.toString,
+        drug_exposure.drug_concept_id.toString,
+        "drug_exposure"
+      )
+    )
+  }
+
+  protected def outputColumns(
+    outputColumnName: String,
+    conceptColumnName: Option[String],
+    outputSuffixes: Seq[String]
+  ) =
+    outputSuffixes.flatMap(suffix =>
+      Seq(
+        outputColumnName + "_count_" + suffix,
+        outputColumnName + "_count_distinct_" + suffix
+      ) ++ (
+        if (conceptColumnName.isDefined)
+          Seq(outputColumnName + "_" + conceptColumnName.get + "_last_defined_" + suffix)
+        else
+          Nil
+      )
+    )
 
   def calcAndExportFeatures(
     inputRootPath: String,
@@ -81,11 +166,7 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
           dateRangeLast6MonthsMap,
           dateRangeIn6MonthsMap
         ),
-        Seq(
-          "before_last_visit",
-          "up_to_6_months_before_last_visit",
-          "up_to_6_months_after_last_visit"
-        )
+        outputSuffixes
       ).map { case (headers, results) =>
         logger.info(s"Date filtering with flows finished.")
         val newResults = results.map { case (personId, rawResults) =>
@@ -197,14 +278,7 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
 
     val pathsWithOutputs = paths.flatMap { case (path, dateColumn, conceptColumn, outputColName) =>
       if (fileExists(path)) {
-        val outputCols = outputSuffixes.flatMap(suffix =>
-          Seq(
-            outputColName + "_count_" + suffix,
-            outputColName + "_count_distinct_" + suffix,
-            outputColName + "_" + conceptColumn + "_last_defined_" + suffix
-          )
-        )
-
+        val outputCols = outputColumns(outputColName, Some(conceptColumn), outputSuffixes)
         Some((path, dateColumn, conceptColumn, outputCols))
       } else {
         logger.warn(s"File '${path}' does not exist. Skipping.")
@@ -314,4 +388,8 @@ trait CalcFullFeaturesHelper extends App with PersonIdCountHelper {
       logger.error(message)
       System.exit(1)
     }
+
+  def get(prefix: String, args: Array[String]) = args.find(_.startsWith("-" + prefix + "=")).map(
+    string => string.substring(prefix.length + 2, string.length)
+  )
 }

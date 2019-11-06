@@ -1,0 +1,177 @@
+package com.bnd.ehrop
+
+import java.nio.file.Paths
+import java.util.Date
+
+import akka.actor.ActorSystem
+import akka.stream.{ActorMaterializer, Materializer}
+import akka.stream.scaladsl.{FileIO, Sink}
+import akka.util.ByteString
+
+import scala.concurrent.{ExecutionContext, Future}
+
+trait Standardize extends CalcFullFeaturesHelper {
+
+  private implicit val system = ActorSystem()
+  private implicit val executor = system.dispatcher
+  private implicit val materializer = ActorMaterializer()
+
+  private val basicNumColNames = Seq(
+    "age_at_last_visit", "year_of_birth", "month_of_birth", "visit_end_date"
+  )
+
+  private val derivedNumColumnNames = {
+    val paths = ioDateConceptSpecs("")
+
+    paths.flatMap { case (_, _, _, outputColName) =>
+      outputColumns(outputColName, None, outputSuffixes)
+    }
+  }
+
+  def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
+
+  def run(args: Array[String]) = {
+    val inputFileNames = get("i", args).map(_.split(",", -1).toSeq)
+
+    if (inputFileNames.isEmpty) {
+      val message = "The input file names'-i=' not specified. Exiting."
+      logger.error(message)
+      System.exit(1)
+    }
+
+    // check if the input files exist
+    inputFileNames.get.foreach(fileExistsOrError)
+
+    val outputFolder = get("o", args).map(withBackslash)
+
+    if (outputFolder.isEmpty) {
+      val message = "The output folder '-o=' not specified. Using the respective input folders."
+      logger.warn(message)
+    }
+
+    for {
+      meanStds <- calcMeanStds(inputFileNames.get, basicNumColNames ++ derivedNumColumnNames)
+      _ <- Future.sequence(
+        inputFileNames.get.map { inputFileName =>
+          val lastBackslash = inputFileName.lastIndexOf("/")
+          val inputPath = if (lastBackslash > 0) inputFileName.substring(0, lastBackslash + 1) else ""
+          val plainName = if (lastBackslash > 0) inputFileName.substring(lastBackslash + 1, inputFileName.length) else inputFileName
+
+          val lastDot = plainName.lastIndexOf(".")
+          val fileNameStrict = if (lastDot > 0) plainName.substring(0, lastDot) else plainName
+          val extension = if (lastDot > 0) plainName.substring(lastDot + 1, plainName.length) else ""
+
+          val outputPath = outputFolder.getOrElse(inputPath)
+
+          standardizeAndOutput(inputFileName, meanStds, outputPath + fileNameStrict + "-std." + extension)
+        }
+      )
+    } yield {
+      System.exit(0)
+    }
+  }
+
+  def standardizeAndOutput(
+    inputPath: String,
+    columnNameWithMeanStds: Seq[(String, Option[(Double, Double)])],
+    outputFileName: String
+  ) = {
+    val source = standardizedLineSource(inputPath, columnNameWithMeanStds)
+    logger.info(s"Exporting a standardized file to '${outputFileName}'.")
+    source.map(line => ByteString(line + "\n")).runWith(FileIO.toPath(Paths.get(outputFileName))).map { _ =>
+      logger.info(s"The file '${outputFileName}' export finished.")
+    }
+  }
+
+  def calcMeanStds(
+    inputPaths: Seq[String],
+    columnNames: Seq[String]
+  ) = {
+    Future.sequence(
+      inputPaths.map(calcBasicStats(_, columnNames))
+    ).map { multiStats =>
+      multiStats.transpose.zip(columnNames).map { case (stats, columnName) =>
+        // merge stats
+        val mergedStats = stats.fold(StatsAccum(0, 0, 0)) { case (total, accum) =>
+          StatsAccum(
+            total.sum + accum.sum,
+            total.sqSum + accum.sqSum,
+            total.count + accum.count
+          )
+        }
+        (columnName, AkkaFlow.calcMeanStd(mergedStats))
+      }
+    }
+  }
+
+  private def calcBasicStats(
+    inputPath: String,
+    columnNames: Seq[String])(
+    implicit materializer: Materializer, executionContext: ExecutionContext
+  ) = {
+    val start = new Date()
+    val doubleSource = doubleCsvSource(inputPath, columnNames)
+
+    doubleSource.via(AkkaFlow.calcBasicStats(columnNames.size)).runWith(Sink.head).map { stats =>
+      logger.info(s"Basic stats for '${inputPath}' and ${columnNames.size} columns calculated in ${new Date().getTime - start.getTime} ms.")
+      stats
+    }
+  }
+
+  private def doubleCsvSource(
+    inputPath: String,
+    columnNames: Seq[String]
+  ) =
+    AkkaFileSource.csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val columnIndeces = columnNames.map(columnName =>
+          columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found ."))
+        )
+
+        def values(els: Array[String]) =
+          columnIndeces.map { index =>
+            val string = els(index).trim
+            if (string.nonEmpty) Some(string.toDouble) else None
+          }
+
+        els => values(els)
+      }
+    )
+
+  private def standardizedLineSource(
+    inputPath: String,
+    columnNameWithMeanStds: Seq[(String, Option[(Double, Double)])]
+  ) =
+    AkkaFileSource.csvAsStringSourceWithTransformAndHeader(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val indexMeanStdMap: Map[Int, (Double, Double)] = columnNameWithMeanStds.flatMap { case (columnName, meanStd) =>
+          meanStd.map { meanStd =>
+            val colIndex = columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found ."))
+            (colIndex, meanStd)
+          }
+        }.toMap
+
+        def asString(el: String) = {
+          val string = el.trim
+          if (string.nonEmpty) Some(string) else None
+        }
+
+        els => els.zipWithIndex.map { case (el, index) =>
+          asString(el).map { string =>
+            indexMeanStdMap.get(index) match {
+              case Some((mean, std)) =>
+                val double = string.toDouble
+                if (std != 0) {
+                  val standValue = (double - mean) / std
+                  (math rint standValue * 10000) / 10000 // round to 4 decimal places
+                } else "0"
+
+              case None => string
+            }
+          }.getOrElse("")
+        }.mkString(",")
+      }
+    )
+}

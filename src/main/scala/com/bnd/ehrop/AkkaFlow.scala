@@ -225,4 +225,50 @@ object AkkaFlow {
         set.add(value)
         map
     }
+
+  def standardize(options: Map[Int, (Double, Double)]) =
+    Flow[Seq[Option[Any]]].map { row =>
+      row.zipWithIndex.map { case (value, index) =>
+        value.map(value =>
+          options.get(index).map { case (shift, norm) =>
+            if (norm != 0) (value.asInstanceOf[Double] - shift) / norm else 0
+          }
+        )
+      }
+    }
+
+  def calcBasicStats(size: Int) =
+    Flow[Seq[Option[Double]]].fold[Seq[StatsAccum]](
+      Seq.fill(size)(StatsAccum(0, 0, 0))
+    ) {
+      case (accums, values) =>
+        accums.zip(values).map { case (accum, value) =>
+          value match {
+            case Some(value) =>
+              StatsAccum(
+                accum.sum + value,
+                accum.sqSum + value * value,
+                accum.count + 1
+              )
+
+            case None => accum
+          }
+        }
+    }
+
+  def calcMeanStd(accum: StatsAccum): Option[(Double, Double)] =
+    if (accum.count > 0) {
+      val mean = accum.sum / accum.count
+      val variance = (accum.sqSum / accum.count) - mean * mean
+      val std = Math.sqrt(variance)
+
+      Some((mean, std))
+    } else
+      None
 }
+
+case class StatsAccum(
+  sum: Double,
+  sqSum: Double,
+  count: Int
+)

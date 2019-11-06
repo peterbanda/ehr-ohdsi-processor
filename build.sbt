@@ -17,7 +17,7 @@ libraryDependencies ++= Seq(
   "ch.qos.logback" % "logback-classic" % "1.2.3"
 )
 
-mainClass in assembly := Some("com.bnd.ehrop.CalcFeatures")
+mainClass in assembly := Some("com.bnd.ehrop.Main")
 
 assemblyMergeStrategy in assembly := {
 //  case PathList("versionchanges.txt") => MergeStrategy.discard
