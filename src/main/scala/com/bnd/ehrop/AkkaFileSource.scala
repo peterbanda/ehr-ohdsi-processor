@@ -250,7 +250,7 @@ object AkkaFileSource {
       None
     }
 
-  private def fileSource(
+  def fileSource(
     fileName: String,
     eol: String,
     allowTruncation: Boolean

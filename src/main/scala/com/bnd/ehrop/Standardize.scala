@@ -49,10 +49,35 @@ trait Standardize extends AppExt {
 
     val isOutputMeanStds = get("ostats", args).map(_ => true).getOrElse(false)
 
+    if (isOutputMeanStds) {
+      val message = "The flag 'ostats' detected. Will be outputting the means and stds into .stats file(s)."
+      logger.info(message)
+    }
+
+    val inputMeanStdsFileName = get("istats", args)
+
+    if (inputMeanStdsFileName.isDefined) {
+      val message = "The input stats (means and stds) passed via 'istats'."
+      logger.info(message)
+    }
+
     {
       for {
         // calculate aggregate mean and stds across all input file
-        meanStds <- calcMeanStds(inputFileNames.get, basicNumColNames ++ derivedNumColumnNames)
+        meanStds <-
+          if (inputMeanStdsFileName.isEmpty)
+            calcMeanStds(inputFileNames.get, basicNumColNames ++ derivedNumColumnNames)
+          else {
+            logger.info(s"Parsing the stats file '${inputMeanStdsFileName.get}'.")
+            AkkaFileSource.fileSource(inputMeanStdsFileName.get, "\n", true).runWith(Sink.seq).map { lines =>
+              lines.map { line =>
+                val els = line.split(",", -1)
+                val columnName = els(0).trim
+                val meanStd = if (els.length == 3) Some((els(1).trim.toDouble, els(2).trim.toDouble)) else None
+                (columnName, meanStd)
+              }
+            }
+          }
 
         // if requested output mean and stds
         _ = if (isOutputMeanStds) {
