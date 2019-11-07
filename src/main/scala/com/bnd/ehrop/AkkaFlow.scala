@@ -85,7 +85,7 @@ object AkkaFlow {
     Flow[(Int, Long, T)].map {
       case (id, date, value) =>
         idFromToDatesMap.get(id).flatMap { case (fromDate, toDate) =>
-          if (date < toDate && date > fromDate) {
+          if (date > fromDate && date <= toDate) {
             Some(id, value)
           } else
             None
@@ -98,7 +98,7 @@ object AkkaFlow {
     Flow[(Int, Long, T)].map {
       case (id, date, value) =>
         idFromToDatesMap.get(id).flatMap { case (fromDate, toDate) =>
-          if (date < toDate && date > fromDate) {
+          if (date > fromDate && date <= toDate) {
             Some(id, date, value)
           } else
             None
