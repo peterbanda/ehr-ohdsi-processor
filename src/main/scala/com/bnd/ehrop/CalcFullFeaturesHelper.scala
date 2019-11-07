@@ -4,10 +4,9 @@ import java.util.{Calendar, Date}
 
 import akka.NotUsed
 import akka.stream.Materializer
-import akka.stream.scaladsl.{Flow, Sink}
+import akka.stream.scaladsl.{Flow, Sink, Source}
 import org.ada.server.akka.AkkaStreamUtil
 import com.bnd.ehrop.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
-import com.bnd.ehrop.Table._
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
@@ -16,90 +15,6 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
   private val countFeatures = 3 * 3 * 7
-
-  protected val outputSuffixes = Seq(
-    "before_last_visit",
-    "up_to_6_months_before_last_visit",
-    "up_to_6_months_after_last_visit"
-  )
-
-  protected def ioDateConceptSpecs(rootPath: String) = {
-    val dataPath = DataPath(rootPath)
-    Seq(
-      // visit_occurrence
-      (
-        dataPath.visit_occurrence,
-        visit_occurrence.visit_end_date.toString,
-        visit_occurrence.visit_concept_id.toString,
-        "visit_occurrence"
-      ),
-
-      // condition_occurrence
-      (
-        dataPath.condition_occurrence,
-        condition_occurrence.condition_start_date.toString,
-        condition_occurrence.condition_concept_id.toString,
-        "condition_occurrence"
-      ),
-
-      // observation_period
-      (
-        dataPath.observation_period,
-        observation_period.observation_period_end_date.toString,
-        observation_period.period_type_concept_id.toString,
-        "observation_period"
-      ),
-
-      // observation
-      (
-        dataPath.observation,
-        observation.observation_date.toString,
-        observation.observation_concept_id.toString,
-        "observation"
-      ),
-
-      // measurement
-      (
-        dataPath.measurement,
-        measurement.measurement_date.toString,
-        measurement.measurement_concept_id.toString,
-        "measurement"
-      ),
-
-      // procedure_occurrence
-      (
-        dataPath.procedure_occurrence,
-        procedure_occurrence.procedure_date.toString,
-        procedure_occurrence.procedure_concept_id.toString,
-        "procedure_occurrence"
-      ),
-
-      // drug_exposure
-      (
-        dataPath.drug_exposure,
-        drug_exposure.drug_exposure_start_date.toString,
-        drug_exposure.drug_concept_id.toString,
-        "drug_exposure"
-      )
-    )
-  }
-
-  protected def outputColumns(
-    outputColumnName: String,
-    conceptColumnName: Option[String],
-    outputSuffixes: Seq[String]
-  ) =
-    outputSuffixes.flatMap(suffix =>
-      Seq(
-        outputColumnName + "_count_" + suffix,
-        outputColumnName + "_count_distinct_" + suffix
-      ) ++ (
-        if (conceptColumnName.isDefined)
-          Seq(outputColumnName + "_" + conceptColumnName.get + "_last_defined_" + suffix)
-        else
-          Nil
-      )
-    )
 
   def calcAndExportFeatures(
     inputRootPath: String,
@@ -166,7 +81,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
           dateRangeLast6MonthsMap,
           dateRangeIn6MonthsMap
         ),
-        outputSuffixes
+        IOSpec.outputSuffixes
       ).map { case (headers, results) =>
         logger.info(s"Date filtering with flows finished.")
         val newResults = results.map { case (personId, rawResults) =>
@@ -201,7 +116,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
           def dateValue(columnName: Table.person.Value)
             (els: Array[String]) =
-            getValue(columnName, els).flatMap(asDate(_, dataPath.person))
+            getValue(columnName, els).flatMap(AkkaFileSource.asDate(_, dataPath.person))
 
           els =>
             try {
@@ -243,29 +158,29 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
         }
       )
 
-      lines <- personOutputSource.runWith(Sink.seq)
-    } yield {
-      val header = (
-        Seq(
-          "person_id",
-          "gender",
-          "race",
-          "ethnicity",
-          "age_at_last_visit",
-          "year_of_birth",
-          "month_of_birth",
-          "visit_end_date"
-        ) ++ (
-          if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
-        ) ++ countHeaders
-      ).mkString(",")
+      // exporting
+      _ <- {
+        val header = (
+          Seq(
+            "person_id",
+            "gender",
+            "race",
+            "ethnicity",
+            "age_at_last_visit",
+            "year_of_birth",
+            "month_of_birth",
+            "visit_end_date"
+          ) ++ (
+            if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
+            ) ++ countHeaders
+        ).mkString(",")
 
-      val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
-      logger.info(s"Exporting results to '${outputFile}.")
-      writeStringAsStream(header + "\n" + lines.mkString("\n"), new java.io.File(outputFile))
-
+        val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
+        logger.info(s"Exporting results to '${outputFile}.")
+        AkkaFileSource.writeLines(Source(List(header)).concat(personOutputSource), outputFile)
+      }
+    } yield
       System.exit(0)
-    }
   }
 
   def calcPersonIdDateMilisConceptCountsAllCustom(
@@ -274,11 +189,11 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     outputSuffixes: Seq[String])(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] = {
-    val paths = ioDateConceptSpecs(rootPath)
+    val paths = IOSpec.dateConceptOuts(rootPath)
 
     val pathsWithOutputs = paths.flatMap { case (path, dateColumn, conceptColumn, outputColName) =>
       if (fileExists(path)) {
-        val outputCols = outputColumns(outputColName, Some(conceptColumn), outputSuffixes)
+        val outputCols = IOSpec.outputColumns(outputColName, Some(conceptColumn), outputSuffixes)
         Some((path, dateColumn, conceptColumn, outputCols))
       } else {
         logger.warn(s"File '${path}' does not exist. Skipping.")
@@ -352,7 +267,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     val start = new Date()
 
     // create a source
-    val personIdDateConceptSource = int2MilisDateCsvSource(inputPath, personColumnName, dateColumnName, conceptColumnName)
+    val personIdDateConceptSource = AkkaFileSource.int2MilisDateCsvSource(inputPath, personColumnName, dateColumnName, conceptColumnName)
     // zip the flows
     val zippedFlow = AkkaStreamUtil.zipNFlows(flows)
 
@@ -388,8 +303,4 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       logger.error(message)
       System.exit(1)
     }
-
-  def get(prefix: String, args: Array[String]) = args.find(_.startsWith("-" + prefix + "=")).map(
-    string => string.substring(prefix.length + 2, string.length)
-  )
 }

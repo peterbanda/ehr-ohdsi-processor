@@ -10,7 +10,7 @@ import akka.util.ByteString
 
 import scala.concurrent.{ExecutionContext, Future}
 
-trait Standardize extends CalcFullFeaturesHelper {
+trait Standardize extends AppExt {
 
   private implicit val system = ActorSystem()
   private implicit val executor = system.dispatcher
@@ -21,10 +21,10 @@ trait Standardize extends CalcFullFeaturesHelper {
   )
 
   private val derivedNumColumnNames = {
-    val paths = ioDateConceptSpecs("")
+    val paths = IOSpec.dateConceptOuts("")
 
     paths.flatMap { case (_, _, _, outputColName) =>
-      outputColumns(outputColName, None, outputSuffixes)
+      IOSpec.outputColumns(outputColName, None, IOSpec.outputSuffixes)
     }
   }
 
@@ -78,7 +78,7 @@ trait Standardize extends CalcFullFeaturesHelper {
   ) = {
     val source = standardizedLineSource(inputPath, columnNameWithMeanStds)
     logger.info(s"Exporting a standardized file to '${outputFileName}'.")
-    source.map(line => ByteString(line + "\n")).runWith(FileIO.toPath(Paths.get(outputFileName))).map { _ =>
+    AkkaFileSource.writeLines(source, outputFileName).map { _ =>
       logger.info(s"The file '${outputFileName}' export finished.")
     }
   }

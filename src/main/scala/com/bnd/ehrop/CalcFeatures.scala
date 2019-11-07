@@ -3,7 +3,7 @@ package com.bnd.ehrop
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 
-trait CalcFeatures extends CalcFullFeaturesHelper {
+trait CalcFeatures extends AppExt {
 
   private implicit val system = ActorSystem()
   private implicit val executor = system.dispatcher
@@ -29,6 +29,8 @@ trait CalcFeatures extends CalcFullFeaturesHelper {
 
     def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 
-    calcAndExportFeatures(withBackslash(inputPath.get), outputFileName)
+    CalcFullFeaturesService.calcAndExportFeatures(withBackslash(inputPath.get), outputFileName)
   }
 }
+
+object CalcFullFeaturesService extends CalcFullFeaturesHelper

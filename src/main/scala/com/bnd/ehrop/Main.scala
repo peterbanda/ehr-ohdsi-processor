@@ -1,10 +1,6 @@
 package com.bnd.ehrop
 
-import com.typesafe.scalalogging.Logger
-
-object Main extends App {
-
-  protected val logger = Logger(this.getClass.getSimpleName)
+object Main extends App with AppExt {
 
   val mode = get("mode", args)
 
@@ -22,10 +18,6 @@ object Main extends App {
     logger.warn(message)
     CalcFeaturesApp.run(args)
   }
-
-  def get(prefix: String, args: Array[String]) = args.find(_.startsWith("-" + prefix + "=")).map(
-    string => string.substring(prefix.length + 2, string.length)
-  )
 }
 
 object StandardizeApp extends Standardize

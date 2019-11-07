@@ -3,12 +3,21 @@ package com.bnd.ehrop
 import java.io.{BufferedOutputStream, File, FileOutputStream}
 import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
+import java.text.{ParseException, ParsePosition, SimpleDateFormat}
+import java.util.{Calendar, Date}
 
+import akka.stream.{IOResult, Materializer}
 import akka.stream.scaladsl.{FileIO, Flow, Framing, Source}
 import akka.util.ByteString
+import com.typesafe.scalalogging.Logger
 import org.apache.commons.io.IOUtils
 
+import scala.concurrent.Future
+
 object AkkaFileSource {
+
+  // logger
+  protected val logger = Logger(this.getClass.getSimpleName)
 
   def csvAsSource(
     fileName: String,
@@ -70,6 +79,170 @@ object AkkaFileSource {
     }
   }
 
+  def intCsvSource(
+    inputPath: String,
+    columnName: String
+  ): Source[Int, _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val intColumnIndex = columnIndexMap.get(columnName).get
+
+        def int(els: Array[String]) = els(intColumnIndex).trim
+
+        els => int(els).toDouble.toInt
+      }
+    )
+
+  def intMilisDateCsvSource(
+    inputPath: String,
+    intColumnName: String,
+    dateColumnName: String
+  ): Source[Option[(Int, Long)], _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val intColumnIndex = columnIndexMap.get(intColumnName).get
+        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+
+        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
+        def dateSafe(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
+
+        els =>
+          try {
+            dateSafe(els).map((int(els), _))
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e;
+          }
+      }
+    )
+
+  def int2MilisDateCsvSource(
+    inputPath: String,
+    intColumnName1: String,
+    dateColumnName: String,
+    intColumnName2: String
+  ): Source[(Int, Option[Long], Option[Int]), _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val intColumnIndex1 = columnIndexMap.get(intColumnName1).get
+        val intColumnIndex2 = columnIndexMap.get(intColumnName2).get
+        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+
+        def asInt(string: String) = string.toDouble.toInt
+        def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
+
+        def int1(els: Array[String]) = asInt(els(intColumnIndex1).trim)
+        def int2(els: Array[String]) = asIntOptional(els(intColumnIndex2).trim)
+        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
+
+        els =>
+          try {
+            (int1(els), date(els), int2(els))
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${intColumnName1}', '${intColumnName2}', and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e;
+          }
+      }
+    )
+
+  def intDateCsvSource(
+    inputPath: String,
+    intColumnName: String,
+    dateColumnName: String
+  ): Source[Option[(Int, Date)], _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val intColumnIndex = columnIndexMap.get(intColumnName).get
+        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+
+        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
+        def dateSafe(els: Array[String]): Option[Date] = asDate(els(dateColumnIndex).trim, inputPath)
+
+        els =>
+          try {
+            dateSafe(els).map((int(els), _))
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e
+          }
+      }
+    )
+
+  protected def asDateX(
+    dateString: String,
+    inputPath: String
+  ) =
+    if (dateString.nonEmpty) {
+      val date = try {
+        val parsePosition = new ParsePosition(0)
+        val dateFormat = new SimpleDateFormat("yyyy-MM-dd")
+        dateFormat.parse(dateString, parsePosition)
+      } catch {
+        case e: ParseException =>
+          logger.error(s"Cannot parse a date string '${dateString}' for the path '${inputPath}'.")
+          throw e
+
+        case e: Exception =>
+          logger.error(s"Fatal problem for a date string '${dateString}' and the path '${inputPath}'.")
+          throw e
+      }
+      Some(date)
+    } else {
+      None
+    }
+
+  protected def asDateMilis(
+    dateString: String,
+    inputPath: String
+  ) =
+    asCalendar(dateString, inputPath).map(_.getTimeInMillis)
+
+  def asDate(
+    dateString: String,
+    inputPath: String
+  ) =
+    asCalendar(dateString, inputPath).map(_.getTime)
+
+  protected def asCalendar(
+    dateString: String,
+    inputPath: String
+  ) =
+    if (dateString.nonEmpty) {
+      val date = try {
+        val year = dateString.substring(0, 4).toInt
+        val month = dateString.substring(5, 7).toInt
+        val day = dateString.substring(8, 10).toInt
+
+        val calendar = Calendar.getInstance()
+        calendar.set(Calendar.YEAR, year)
+        calendar.set(Calendar.MONTH, month - 1)
+        calendar.set(Calendar.DAY_OF_MONTH, day)
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+        calendar
+      } catch {
+        case e: ParseException =>
+          logger.error(s"Cannot parse a date string '${dateString}' for the path '${inputPath}'.", e)
+          throw e
+
+        case e: Exception =>
+          logger.error(s"Fatal problem for a date string '${dateString}' and the path '${inputPath}'.", e)
+          throw e
+      }
+      Some(date)
+    } else {
+      None
+    }
+
   private def fileSource(
     fileName: String,
     eol: String,
@@ -78,6 +251,13 @@ object AkkaFileSource {
     FileIO.fromPath(Paths.get(fileName))
       .via(Framing.delimiter(ByteString(eol), 1000000, allowTruncation)
         .map(_.utf8String))
+
+  def writeLines(
+    source: Source[String, _],
+    fileName: String)(
+    implicit materializer: Materializer
+  ): Future[IOResult] =
+    source.map(line => ByteString(line + "\n")).runWith(FileIO.toPath(Paths.get(fileName)))
 
   def writeStringAsStream(string: String, file: File) = {
     val outputStream = Stream(string.getBytes(StandardCharsets.UTF_8))
@@ -91,5 +271,4 @@ object AkkaFileSource {
     finally
       target.close
   }
-
 }
