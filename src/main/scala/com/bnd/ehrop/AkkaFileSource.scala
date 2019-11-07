@@ -79,6 +79,13 @@ object AkkaFileSource {
     }
   }
 
+  private def indexColumnSafe(
+    columnName: String,
+    columnIndexMap: Map[String, Int],
+    inputPath: String
+  ) =
+    columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found"))
+
   def intCsvSource(
     inputPath: String,
     columnName: String
@@ -86,7 +93,7 @@ object AkkaFileSource {
     csvAsSourceWithTransform(inputPath,
       header => {
         val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = columnIndexMap.get(columnName).get
+        val intColumnIndex = indexColumnSafe(columnName, columnIndexMap, inputPath)
 
         def int(els: Array[String]) = els(intColumnIndex).trim
 
@@ -102,8 +109,8 @@ object AkkaFileSource {
     csvAsSourceWithTransform(inputPath,
       header => {
         val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = columnIndexMap.get(intColumnName).get
-        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
 
         def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
         def dateSafe(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
@@ -128,9 +135,9 @@ object AkkaFileSource {
     csvAsSourceWithTransform(inputPath,
       header => {
         val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex1 = columnIndexMap.get(intColumnName1).get
-        val intColumnIndex2 = columnIndexMap.get(intColumnName2).get
-        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+        val intColumnIndex1 = indexColumnSafe(intColumnName1, columnIndexMap, inputPath)
+        val intColumnIndex2 = indexColumnSafe(intColumnName2, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
 
         def asInt(string: String) = string.toDouble.toInt
         def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
@@ -158,8 +165,8 @@ object AkkaFileSource {
     csvAsSourceWithTransform(inputPath,
       header => {
         val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = columnIndexMap.get(intColumnName).get
-        val dateColumnIndex = columnIndexMap.get(dateColumnName).get
+        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
 
         def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
         def dateSafe(els: Array[String]): Option[Date] = asDate(els(dateColumnIndex).trim, inputPath)

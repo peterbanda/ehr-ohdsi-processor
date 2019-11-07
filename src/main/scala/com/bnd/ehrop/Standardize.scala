@@ -4,7 +4,7 @@ import java.util.Date
 
 import akka.actor.ActorSystem
 import akka.stream.{ActorMaterializer, Materializer}
-import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.{Sink, Source}
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -47,26 +47,65 @@ trait Standardize extends AppExt {
       logger.warn(message)
     }
 
-    for {
-      meanStds <- calcMeanStds(inputFileNames.get, basicNumColNames ++ derivedNumColumnNames)
-      _ <- Future.sequence(
-        inputFileNames.get.map { inputFileName =>
-          val lastBackslash = inputFileName.lastIndexOf("/")
-          val inputPath = if (lastBackslash > 0) inputFileName.substring(0, lastBackslash + 1) else ""
-          val plainName = if (lastBackslash > 0) inputFileName.substring(lastBackslash + 1, inputFileName.length) else inputFileName
+    val isOutputMeanStds = get("ostats", args).map(_ => true).getOrElse(false)
 
-          val lastDot = plainName.lastIndexOf(".")
-          val fileNameStrict = if (lastDot > 0) plainName.substring(0, lastDot) else plainName
-          val extension = if (lastDot > 0) plainName.substring(lastDot + 1, plainName.length) else ""
+    {
+      for {
+        // calculate aggregate mean and stds across all input file
+        meanStds <- calcMeanStds(inputFileNames.get, basicNumColNames ++ derivedNumColumnNames)
 
-          val outputPath = outputFolder.getOrElse(inputPath)
-
-          standardizeAndOutput(inputFileName, meanStds, outputPath + fileNameStrict + "-std." + extension)
+        // if requested output mean and stds
+        _ = if (isOutputMeanStds) {
+          val statsLines = meanStds.map { case (colName, meanStd) =>
+            val els = Seq(colName) ++ meanStd.map { case (mean, std) => Seq(mean.toString, std.toString) }.getOrElse(Nil)
+            els.mkString(",")
+          }
+          inputFileNames.get.foreach { inputFileName =>
+            val outputFileName = generateOutputFileName(inputFileName, outputFolder, false) + ".stats"
+            AkkaFileSource.writeLines(Source(statsLines.toList), outputFileName)
+          }
         }
-      )
-    } yield {
-      System.exit(0)
+
+        // output standardized files
+        _ <- standardizeAndOutputMulti(inputFileNames.get, meanStds, outputFolder)
+      } yield
+        System.exit(0)
+    } recover {
+      case e: Exception =>
+        logger.error(s"Error occurred: ${e.getMessage}. Exiting.")
+        System.exit(1)
     }
+  }
+
+  def standardizeAndOutputMulti(
+    inputFileNames: Seq[String],
+    meanStds: Seq[(String, Option[(Double, Double)])],
+    outputFolder: Option[String]
+  ) =
+    Future.sequence(
+      inputFileNames.map { inputFileName =>
+        val outputFileName = generateOutputFileName(inputFileName, outputFolder, true)
+        standardizeAndOutput(inputFileName, meanStds, outputFileName)
+      }
+    ).map(_ => ())
+
+  private def generateOutputFileName(
+    inputFileName: String,
+    outputFolder: Option[String],
+    withExtension: Boolean = true
+  ) = {
+    val lastBackslash = inputFileName.lastIndexOf("/")
+    val inputPath = if (lastBackslash > 0) inputFileName.substring(0, lastBackslash + 1) else ""
+    val plainName = if (lastBackslash > 0) inputFileName.substring(lastBackslash + 1, inputFileName.length) else inputFileName
+
+    val lastDot = plainName.lastIndexOf(".")
+    val fileNameStrict = if (lastDot > 0) plainName.substring(0, lastDot) else plainName
+    val extension = if (lastDot > 0) plainName.substring(lastDot + 1, plainName.length) else ""
+
+    val outputPath = outputFolder.getOrElse(inputPath)
+    val outputFileWoExtension = outputPath + fileNameStrict + "-std"
+
+    if (withExtension) outputFileWoExtension + "." + extension else outputFileWoExtension
   }
 
   def standardizeAndOutput(
@@ -124,7 +163,10 @@ trait Standardize extends AppExt {
       header => {
         val columnIndexMap = header.zipWithIndex.toMap
         val columnIndeces = columnNames.map(columnName =>
-          columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found ."))
+          columnIndexMap.get(columnName).getOrElse {
+            val message = s"Column '${columnName}' in the file '${inputPath}' not found"
+            throw new IllegalArgumentException(message)
+          }
         )
 
         def values(els: Array[String]) =
@@ -146,7 +188,10 @@ trait Standardize extends AppExt {
         val columnIndexMap = header.zipWithIndex.toMap
         val indexMeanStdMap: Map[Int, (Double, Double)] = columnNameWithMeanStds.flatMap { case (columnName, meanStd) =>
           meanStd.map { meanStd =>
-            val colIndex = columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found ."))
+            val colIndex = columnIndexMap.get(columnName).getOrElse {
+              val message = s"Column '${columnName}' in the file '${inputPath}' not found"
+              throw new IllegalArgumentException(message)
+            }
             (colIndex, meanStd)
           }
         }.toMap
