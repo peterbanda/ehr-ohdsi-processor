@@ -14,10 +14,11 @@ import scala.concurrent.{ExecutionContext, Future}
 trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
-  private val countFeatures = 3 * 3 * 7
+  private val baseCountFeatures = 3 * 7
 
   def calcAndExportFeatures(
     inputRootPath: String,
+    labeledDateIntervals: Seq[LabeledDateInterval],
     outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
@@ -31,70 +32,50 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     val hasDeathFile = fileExists(dataPath.death)
 
     for {
+      // visit end dates per person
       visitEndDates <- personIdMaxDate(
         dataPath.visit_occurrence,
         Table.visit_occurrence.visit_end_date.toString
-      )
-
-      dateRangeIn6MonthsMap = visitEndDates.map { case (personId, lastVisitDate) =>
-        val calendar = Calendar.getInstance()
-        calendar.setTime(lastVisitDate)
-        calendar.add(Calendar.DAY_OF_YEAR, 180)
-
-        (personId, (lastVisitDate.getTime, calendar.getTime.getTime))
-      }.toMap
-
-      dateRangeLast6MonthsMap = visitEndDates.map { case (personId, lastVisitDate) =>
-        val calendar = Calendar.getInstance()
-        calendar.setTime(lastVisitDate)
-        calendar.add(Calendar.DAY_OF_YEAR, -180)
-
-        (personId, (calendar.getTime.getTime, lastVisitDate.getTime))
-      }.toMap
-
-      dateRangeLastInfMonthsMap = visitEndDates.map { case (personId, lastVisitDate) =>
-        val calendar = Calendar.getInstance()
-        calendar.setTime(lastVisitDate)
-        calendar.add(Calendar.DAY_OF_YEAR, -100000) // inf = 100000 days :)
-
-        (personId, (calendar.getTime.getTime, lastVisitDate.getTime))
-      }.toMap
+      ).map(_.toMap)
 
       // calc death counts in 6 months and turn death counts into 'hasDied' flags
       deadIn6MonthsPersonIds <-
-        if (hasDeathFile)
+        if (hasDeathFile) {
+          val dateRangeIn6MonthsMap = dateIntervalsMilis(visitEndDates, 0, 180)
+
           personIdDateMilisCount(
             dataPath.death, dateRangeIn6MonthsMap,
             Table.death.death_date.toString, ""
-          ) .map { case (_, deadCounts) =>
-            deadCounts.filter(_._2 > 0).map(_._1).toSet }
-        else {
+          ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
+        } else {
           logger.warn(s"Death file '${dataPath.death}' not found. Skipping.")
           Future(Set[Int]())
         }
 
       // calc stats for different the periods
-      (countHeaders, personCountsMap) <- calcPersonIdDateMilisConceptCountsAllCustom(
-        inputRootPath,
-        Seq(
-          dateRangeLastInfMonthsMap,
-          dateRangeLast6MonthsMap,
-          dateRangeIn6MonthsMap
-        ),
-        IOSpec.outputSuffixes
-      ).map { case (headers, results) =>
-        logger.info(s"Date filtering with flows finished.")
-        val newResults = results.map { case (personId, rawResults) =>
-          val processedResults = rawResults.zipWithIndex.map { case (result, index) =>
-            index % 3 match {
-              case 0 => result.getOrElse(0)
-              case 1 => result.getOrElse(0)
-              case 2 => result.getOrElse("")
-            }
-          }
-          (personId, processedResults)
+      (countHeaders, personCountsMap) <- {
+        val outputLabels = labeledDateIntervals.map(_.label)
+        val dateIntervals = labeledDateIntervals.map { case LabeledDateInterval(_, fromDaysShift, toDaysShift) =>
+          dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
         }
-        (headers, newResults.toMap)
+        calcPersonIdDateMilisConceptCountsAllCustom(
+          inputRootPath,
+          dateIntervals,
+          outputLabels
+        ).map { case (headers, results) =>
+          logger.info(s"Date filtering with flows finished.")
+          val newResults = results.map { case (personId, rawResults) =>
+            val processedResults = rawResults.zipWithIndex.map { case (result, index) =>
+              index % 3 match {
+                case 0 => result.getOrElse(0)
+                case 1 => result.getOrElse(0)
+                case 2 => result.getOrElse("")
+              }
+            }
+            (personId, processedResults)
+          }
+          (headers, newResults.toMap)
+        }
       }
 
       personOutputSource = csvAsSourceWithTransform(dataPath.person,
@@ -134,7 +115,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
               val ageAtLastVisit = visitEndDate.map(endDate => (endDate.getTime - birthDate.getTime).toDouble / milisInYear)
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
-              val counts = personCountsMap.get(personId).getOrElse(Seq.fill(countFeatures)(0))
+              val counts = personCountsMap.get(personId).getOrElse(Seq.fill(baseCountFeatures * labeledDateIntervals.size)(0))
 
               (
                 Seq(
@@ -232,6 +213,24 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
     calcPersonIdDateMilisConceptMultiFlows[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
   }
+
+  private def dateIntervalsMilis(
+    idDates: Map[Int, Date],
+    startShiftDays: Int,
+    endShiftDays: Int
+  ): Map[Int, (Long, Long)] =
+    idDates.map { case (personId, lastVisitDate) =>
+
+      val startCalendar = Calendar.getInstance()
+      startCalendar.setTime(lastVisitDate)
+      startCalendar.add(Calendar.DAY_OF_YEAR, startShiftDays)
+
+      val endCalendar = Calendar.getInstance()
+      endCalendar.setTime(lastVisitDate)
+      endCalendar.add(Calendar.DAY_OF_YEAR, endShiftDays)
+
+      (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
+    }
 
   type PersonData = (Int, Long, Option[Int])
   type PersonFlow[T] = Flow[PersonData, mutable.Map[Int, T], NotUsed]

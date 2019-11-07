@@ -105,12 +105,6 @@ object IOSpec {
     )
   }
 
-  val outputSuffixes = Seq(
-    "before_last_visit",
-    "up_to_6_months_before_last_visit",
-    "up_to_6_months_after_last_visit"
-  )
-
   def outputColumns(
     outputColumnName: String,
     conceptColumnName: Option[String],
@@ -128,3 +122,9 @@ object IOSpec {
         )
     )
 }
+
+case class LabeledDateInterval(
+  label: String,
+  fromDaysShift: Int,
+  toDaysShift: Int
+)

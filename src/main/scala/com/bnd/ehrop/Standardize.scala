@@ -1,12 +1,10 @@
 package com.bnd.ehrop
 
-import java.nio.file.Paths
 import java.util.Date
 
 import akka.actor.ActorSystem
 import akka.stream.{ActorMaterializer, Materializer}
-import akka.stream.scaladsl.{FileIO, Sink}
-import akka.util.ByteString
+import akka.stream.scaladsl.Sink
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -24,7 +22,7 @@ trait Standardize extends AppExt {
     val paths = IOSpec.dateConceptOuts("")
 
     paths.flatMap { case (_, _, _, outputColName) =>
-      IOSpec.outputColumns(outputColName, None, IOSpec.outputSuffixes)
+      IOSpec.outputColumns(outputColName, None, dateIntervals.map(_.label))
     }
   }
 
