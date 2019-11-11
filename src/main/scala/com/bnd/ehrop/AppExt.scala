@@ -34,7 +34,7 @@ trait AppExt {
       System.exit(1)
     }
     config.getObjectList("dateIntervals").map(configObject =>
-      LabeledDateInterval(
+      DayInterval(
         configObject.get("label").unwrapped().asInstanceOf[String],
         configObject.get("fromDaysShift").unwrapped().asInstanceOf[Int],
         configObject.get("toDaysShift").unwrapped().asInstanceOf[Int]

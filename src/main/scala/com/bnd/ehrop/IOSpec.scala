@@ -105,6 +105,8 @@ object IOSpec {
     )
   }
 
+//  private val flowLabels = Seq("count", "count_distinct", "")
+
   def outputColumns(
     outputColumnName: String,
     conceptColumnName: Option[String],
@@ -123,8 +125,13 @@ object IOSpec {
     )
 }
 
-case class LabeledDateInterval(
+case class DayInterval(
   label: String,
   fromDaysShift: Int,
   toDaysShift: Int
+)
+
+case class ConceptGroup(
+  label: String,
+  ids: Set[Int]
 )

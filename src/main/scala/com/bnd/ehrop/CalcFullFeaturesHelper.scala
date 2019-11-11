@@ -18,7 +18,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
   def calcAndExportFeatures(
     inputRootPath: String,
-    labeledDateIntervals: Seq[LabeledDateInterval],
+    dayIntervals: Seq[DayInterval],
     outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
@@ -54,11 +54,12 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
       // calc stats for different the periods
       (countHeaders, personCountsMap) <- {
-        val outputLabels = labeledDateIntervals.map(_.label)
-        val dateIntervals = labeledDateIntervals.map { case LabeledDateInterval(_, fromDaysShift, toDaysShift) =>
+        val outputLabels = dayIntervals.map(_.label)
+        val dateIntervals = dayIntervals.map { case DayInterval(_, fromDaysShift, toDaysShift) =>
           dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
         }
-        calcPersonIdDateMilisConceptCountsAllCustom(
+
+        calcFeaturesAllPaths(
           inputRootPath,
           dateIntervals,
           outputLabels
@@ -102,7 +103,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
           els =>
             try {
               val personId = intValue(Table.person.person_id)(els).getOrElse(throw new RuntimeException(s"Person id missing for the row ${els.mkString(",")}"))
-              val birthDate = dateValue(Table.person.birth_datetime)(els).getOrElse(throw new RuntimeException(s"Birth date missing for the row ${els.mkString(",")}"))
+              val birthDate = dateValue(Table.person.birth_datetime)(els)
               val yearOfBirth = intValue(Table.person.year_of_birth)(els)
               val monthOfBirth = intValue(Table.person.month_of_birth)(els)
               val gender = intValue(Table.person.gender_concept_id)(els)
@@ -112,10 +113,12 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
               val visitEndDate = visitEndDates.get(personId)
               if (visitEndDate.isEmpty)
                 logger.warn(s"No end visit found for the person id ${personId}.")
-              val ageAtLastVisit = visitEndDate.map(endDate => (endDate.getTime - birthDate.getTime).toDouble / milisInYear)
+              val ageAtLastVisit = (visitEndDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
+                (endDate.getTime - birthDate.getTime).toDouble / milisInYear
+              }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
-              val counts = personCountsMap.get(personId).getOrElse(Seq.fill(baseCountFeatures * labeledDateIntervals.size)(0))
+              val counts = personCountsMap.get(personId).getOrElse(Seq.fill(baseCountFeatures * dayIntervals.size)(0))
 
               (
                 Seq(
@@ -164,10 +167,12 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       System.exit(0)
   }
 
-  def calcPersonIdDateMilisConceptCountsAllCustom(
+  def calcFeaturesAllPaths(
     rootPath: String,
     idFromToDatesMaps: Seq[Map[Int, (Long, Long)]],
-    outputSuffixes: Seq[String])(
+    outputSuffixes: Seq[String],
+    conceptGroups: Seq[ConceptGroup] = Nil
+  )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] = {
     val paths = IOSpec.dateConceptOuts(rootPath)
@@ -182,11 +187,19 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       }
     }
 
+    // We use 3 flows/feature generation types:
+    // - 1. counts
+    // - 2. distinct counts
+    // - 3. last defined concepts
+    // - 4. exists group concepts (several possible)
     val flows = () => {
       idFromToDatesMaps.map { dateMap =>
         val countFlow: PersonFlow[Int] = AkkaFlow.countAll[Long, Option[Int]]
         val countDistinct: PersonFlow[mutable.Set[Int]] = Flow[PersonData].collect { case (x, y, Some(z)) => (x, z)}.via(AkkaFlow.collectDistinct[Int])
         val lastConceptFlow: PersonFlow[(Long, Int)] = AkkaFlow.lastDefined[Long, Int]
+//        val existConcepFlows: Seq[PersonFlow[Boolean]] = conceptGroups.map { conceptSet =>
+//          Flow[PersonData].collect { case (x, y, Some(z)) => (x, z)}.via(AkkaFlow.existsIn(conceptSet.ids))
+//        }
 
         val sameFilterFlows = Seq(countFlow, countDistinct, lastConceptFlow)
 
@@ -211,32 +224,14 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       )
     }
 
-    calcPersonIdDateMilisConceptMultiFlows[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
+    calcCustomFeaturesMultiInputs[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
   }
-
-  private def dateIntervalsMilis(
-    idDates: Map[Int, Date],
-    startShiftDays: Int,
-    endShiftDays: Int
-  ): Map[Int, (Long, Long)] =
-    idDates.map { case (personId, lastVisitDate) =>
-
-      val startCalendar = Calendar.getInstance()
-      startCalendar.setTime(lastVisitDate)
-      startCalendar.add(Calendar.DAY_OF_YEAR, startShiftDays)
-
-      val endCalendar = Calendar.getInstance()
-      endCalendar.setTime(lastVisitDate)
-      endCalendar.add(Calendar.DAY_OF_YEAR, endShiftDays)
-
-      (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
-    }
 
   type PersonData = (Int, Long, Option[Int])
   type PersonFlow[T] = Flow[PersonData, mutable.Map[Int, T], NotUsed]
   type SeqPersonFlow[T] = Flow[PersonData, Seq[mutable.Map[Int, T]], NotUsed]
 
-  def calcPersonIdDateMilisConceptMultiFlows[T](
+  def calcCustomFeaturesMultiInputs[T](
     inputs: Seq[(String, String, String, Seq[String])],
     flows: () => Seq[SeqPersonFlow[T]],
     postProcess: Seq[T => Int],
@@ -246,13 +241,13 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     // run each in parallel
     Future.sequence(
       inputs.map(
-        (personIdDateMilisConcepFlows[T, Int](flows(), postProcess, consoleOuts)(
+        (calcCustomFeatures[T, Int](flows(), postProcess, consoleOuts)(
           _: String, _: String, _: String, _: Seq[String])
           ).tupled
       )
     ).map(multiCounts => groupResults(multiCounts.flatten))
 
-  private def personIdDateMilisConcepFlows[T, OUT](
+  private def calcCustomFeatures[T, OUT](
     flows: Seq[SeqPersonFlow[T]],
     postProcess: Seq[T => OUT],
     consoleOuts: Seq[mutable.Map[Int, OUT] => String] = Nil)(
@@ -301,5 +296,23 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       val message = s"The input path '${name}' does not exist. Exiting."
       logger.error(message)
       System.exit(1)
+    }
+
+  private def dateIntervalsMilis(
+    idDates: Map[Int, Date],
+    startShiftDays: Int,
+    endShiftDays: Int
+  ): Map[Int, (Long, Long)] =
+    idDates.map { case (personId, lastVisitDate) =>
+
+      val startCalendar = Calendar.getInstance()
+      startCalendar.setTime(lastVisitDate)
+      startCalendar.add(Calendar.DAY_OF_YEAR, startShiftDays)
+
+      val endCalendar = Calendar.getInstance()
+      endCalendar.setTime(lastVisitDate)
+      endCalendar.add(Calendar.DAY_OF_YEAR, endShiftDays)
+
+      (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
     }
 }

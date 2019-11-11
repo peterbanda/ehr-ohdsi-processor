@@ -211,6 +211,19 @@ object AkkaFlow {
         map
     }
 
+  def existsIn[T](
+    set: Set[T]
+  ): Flow[(Int, T), mutable.Map[Int, Boolean], NotUsed] =
+    Flow[(Int, T)].fold[mutable.Map[Int, Boolean]](
+      mutable.Map[Int, Boolean]()
+    ) {
+      case (map, (id, value)) =>
+        if (set.contains(value)) {
+          map.update(id, true)
+        }
+        map
+    }
+
   def collectDistinct[T]: Flow[(Int, T), mutable.Map[Int, mutable.Set[T]], NotUsed] =
     Flow[(Int, T)].fold[mutable.Map[Int, mutable.Set[T]]](
       mutable.Map[Int, mutable.Set[T]]()
