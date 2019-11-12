@@ -1,8 +1,12 @@
 package com.bnd.ehrop
 
-import com.bnd.ehrop.Table._
+import com.bnd.ehrop.model.Table._
 
 object IOSpec {
+
+  def featureExtractions(rootPath: String) = {
+
+  }
 
   def counts(rootPath: String) = {
     val dataPath = DataPath(rootPath)
@@ -124,12 +128,6 @@ object IOSpec {
         )
     )
 }
-
-case class DayInterval(
-  label: String,
-  fromDaysShift: Int,
-  toDaysShift: Int
-)
 
 case class ConceptGroup(
   label: String,

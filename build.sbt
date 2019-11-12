@@ -2,7 +2,7 @@ organization := "com.bnd"
 
 name := "ehr-ohdsi-processor"
 
-version := "0.0.5"
+version := "0.1.0"
 
 scalaVersion := "2.12.10" ///"2.11.12"
 
@@ -18,12 +18,3 @@ libraryDependencies ++= Seq(
 )
 
 mainClass in assembly := Some("com.bnd.ehrop.Main")
-
-assemblyMergeStrategy in assembly := {
-//  case PathList("versionchanges.txt") => MergeStrategy.discard
-//  case PathList("tessdata/") => MergeStrategy.discard
-//  case PathList("org", "joda", "time", "base", "BaseDateTime.class") => MergeStrategy.first
-  case x =>
-    val oldStrategy = (assemblyMergeStrategy in assembly).value
-    oldStrategy(x)
-}

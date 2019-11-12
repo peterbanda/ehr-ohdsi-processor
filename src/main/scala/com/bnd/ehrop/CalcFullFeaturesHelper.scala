@@ -7,6 +7,7 @@ import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import org.ada.server.akka.AkkaStreamUtil
 import com.bnd.ehrop.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
+import com.bnd.ehrop.model.{DayInterval, Table}
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
@@ -227,6 +228,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     calcCustomFeaturesMultiInputs[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
   }
 
+  // Person id, Date, and additional data
   type PersonData = (Int, Long, Option[Int])
   type PersonFlow[T] = Flow[PersonData, mutable.Map[Int, T], NotUsed]
   type SeqPersonFlow[T] = Flow[PersonData, Seq[mutable.Map[Int, T]], NotUsed]

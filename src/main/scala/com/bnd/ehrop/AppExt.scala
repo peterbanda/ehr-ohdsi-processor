@@ -1,7 +1,9 @@
 package com.bnd.ehrop
 
+import com.bnd.ehrop.model.DayInterval
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.Logger
+
 import scala.collection.JavaConversions._
 
 trait AppExt {
