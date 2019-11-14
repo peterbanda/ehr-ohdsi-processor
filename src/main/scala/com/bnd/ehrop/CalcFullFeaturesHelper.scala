@@ -2,12 +2,13 @@ package com.bnd.ehrop
 
 import java.util.{Calendar, Date}
 
-import akka.NotUsed
-import akka.stream.Materializer
-import akka.stream.scaladsl.{Flow, Sink, Source}
-import org.ada.server.akka.AkkaStreamUtil
-import com.bnd.ehrop.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
-import com.bnd.ehrop.model.{DayInterval, Table}
+import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
+import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
+import com.bnd.ehrop.model.{DistinctCount, LastDefinedConcept, _}
+import _root_.akka.stream.Materializer
+import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
+import _root_.akka.NotUsed
+import FeatureTypes._
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
@@ -195,9 +196,9 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     // - 4. exists group concepts (several possible)
     val flows = () => {
       idFromToDatesMaps.map { dateMap =>
-        val countFlow: PersonFlow[Int] = AkkaFlow.countAll[Long, Option[Int]]
-        val countDistinct: PersonFlow[mutable.Set[Int]] = Flow[PersonData].collect { case (x, y, Some(z)) => (x, z)}.via(AkkaFlow.collectDistinct[Int])
-        val lastConceptFlow: PersonFlow[(Long, Int)] = AkkaFlow.lastDefined[Long, Int]
+        val countFlow: EHRFlow[Int] = AkkaFlow.countAll[Long, Seq[Option[Int]]]
+        val countDistinct: EHRFlow[mutable.Set[Int]] = Flow[EHRData].collect { case (x, y, Seq(Some(z))) => (x, z)}.via(AkkaFlow.collectDistinct[Int])
+        val lastConceptFlow: EHRFlow[(Long, Int)] = Flow[EHRData].map { case (x, y, z) => (x, y, z.head) }.via(AkkaFlow.lastDefined[Long, Int])
 //        val existConcepFlows: Seq[PersonFlow[Boolean]] = conceptGroups.map { conceptSet =>
 //          Flow[PersonData].collect { case (x, y, Some(z)) => (x, z)}.via(AkkaFlow.existsIn(conceptSet.ids))
 //        }
@@ -205,7 +206,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
         val sameFilterFlows = Seq(countFlow, countDistinct, lastConceptFlow)
 
         // zip the flows
-        AkkaFlow.filterDate2[Option[Int]](dateMap).collect { case Some(x) => x }.via(AkkaStreamUtil.zipNFlows(sameFilterFlows)).asInstanceOf[SeqPersonFlow[Any]]
+        AkkaFlow.filterDate2[Seq[Option[Int]]](dateMap).collect { case Some(x) => x }.via(AkkaStreamUtil.zipNFlows(sameFilterFlows)).asInstanceOf[SeqEHRFlow[Any]]
       }
     }
 
@@ -228,14 +229,9 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     calcCustomFeaturesMultiInputs[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
   }
 
-  // Person id, Date, and additional data
-  type PersonData = (Int, Long, Option[Int])
-  type PersonFlow[T] = Flow[PersonData, mutable.Map[Int, T], NotUsed]
-  type SeqPersonFlow[T] = Flow[PersonData, Seq[mutable.Map[Int, T]], NotUsed]
-
   def calcCustomFeaturesMultiInputs[T](
     inputs: Seq[(String, String, String, Seq[String])],
-    flows: () => Seq[SeqPersonFlow[T]],
+    flows: () => Seq[SeqEHRFlow[T]],
     postProcess: Seq[T => Int],
     consoleOuts: Seq[mutable.Map[Int, Int] => String] = Nil)(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -250,7 +246,7 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     ).map(multiCounts => groupResults(multiCounts.flatten))
 
   private def calcCustomFeatures[T, OUT](
-    flows: Seq[SeqPersonFlow[T]],
+    flows: Seq[SeqEHRFlow[T]],
     postProcess: Seq[T => OUT],
     consoleOuts: Seq[mutable.Map[Int, OUT] => String] = Nil)(
     inputPath: String,
@@ -263,11 +259,11 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     val start = new Date()
 
     // create a source
-    val personIdDateConceptSource = AkkaFileSource.int2MilisDateCsvSource(inputPath, personColumnName, dateColumnName, conceptColumnName)
+    val personDateDataSource = AkkaFileSource.idMilisDateDataCsvSource(inputPath, personColumnName, dateColumnName, Seq(conceptColumnName))
     // zip the flows
     val zippedFlow = AkkaStreamUtil.zipNFlows(flows)
 
-    personIdDateConceptSource
+    personDateDataSource
       .collect { case (x, Some(y), z) => (x, y, z) }
       .via(zippedFlow)
       .runWith(Sink.head)
@@ -316,5 +312,90 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       endCalendar.add(Calendar.DAY_OF_YEAR, endShiftDays)
 
       (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
+    }
+
+  private def featureExecutorsAndColumns[T <: Table](
+    tableFeatures: TableFeatures[T]
+  ): (Seq[FeatureExecutor[_]], Seq[String]) = {
+    // ref columns
+    val refColumns = tableFeatures.extractions.flatMap(_.columns).toSet.toSeq.sorted
+    val columns = refColumns.map(_.toString)
+
+    // create executors
+    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](refColumns)
+    val executors = tableFeatures.extractions.map(executorFactory.apply)
+
+    (executors, columns)
+  }
+}
+
+object FeatureTypes {
+  // id, date, and additional data
+  type EHRData = (Int, Long, Seq[Option[Int]])
+  type EHRFlow[T] = Flow[EHRData, mutable.Map[Int, T], NotUsed]
+  type SeqEHRFlow[T] = Flow[EHRData, Seq[mutable.Map[Int, T]], NotUsed]
+}
+
+case class FeatureExecutor[T](
+  flow: EHRFlow[T],
+  postProcess: T => Int,
+  consoleOut: mutable.Map[Int, Int] => String
+)
+
+class FeatureExecutorFactory[C](refColumns: Seq[C]) {
+
+  private val columnIndexMap = refColumns.zipWithIndex.toMap
+
+  private def columnIndex(col: C): Int =
+    columnIndexMap.get(col).getOrElse(throw new IllegalArgumentException(s"Column '${col}' not found."))
+
+  def apply(feature: FeatureExtraction[C]): FeatureExecutor[_] =
+    feature match {
+      // count
+      case Count() =>
+        FeatureExecutor[Int](
+          AkkaFlow.countAll[Long, Seq[Option[Int]]],
+          identity[Int],
+          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString
+        )
+
+      // distinct count
+      case DistinctCount() =>
+        val flow = Flow[EHRData]
+          .collect { case (x, y, Seq(Some(z))) => (x, z) }
+          .via(AkkaFlow.collectDistinct[Int])
+
+        FeatureExecutor[mutable.Set[Int]](,
+          flow,
+          (value: mutable.Set[Int]) => value.size,
+          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString
+        )
+
+      // last defined concept
+      case LastDefinedConcept(conceptColumn) =>
+        val index = columnIndex(conceptColumn)
+        val flow = Flow[EHRData]
+          .map { case (x, y, z) => (x, y, z(index)) }
+          .via(AkkaFlow.lastDefined[Long, Int])
+
+        FeatureExecutor[(Long, Int)](
+          flow,
+          (value: (Long, Int)) => value._2,
+          (map: mutable.Map[Int, Int]) => map.size.toString
+        )
+
+      // exist concept in group
+      case ExistConceptInGroup(conceptColumn, ids, _) =>
+        val index = columnIndex(conceptColumn)
+        val flow = Flow[EHRData]
+          .map { case (x, y, z) => (x, z(index)) }
+          .collect { case (x, Some(z)) => (x, z) }
+          .via(AkkaFlow.existsIn(ids))
+
+        FeatureExecutor[Boolean](
+          flow,
+          (value: Boolean) => if (value) 1 else 0,
+          (map: mutable.Map[Int, Int]) => map.size.toString
+        )
     }
 }

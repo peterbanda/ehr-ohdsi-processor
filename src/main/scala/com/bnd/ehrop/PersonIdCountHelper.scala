@@ -1,11 +1,11 @@
 package com.bnd.ehrop
 
-import akka.stream.{Materializer, OverflowStrategy}
-import akka.stream.scaladsl.{Sink, Source}
+import _root_.akka.stream.{Materializer, OverflowStrategy}
+import _root_.akka.stream.scaladsl.{Sink, Source}
 import java.util.{Calendar, Date}
 
+import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
 import com.bnd.ehrop.model.Table
-import org.ada.server.akka.AkkaStreamUtil
 import com.typesafe.scalalogging.Logger
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -174,8 +174,8 @@ trait PersonIdCountHelper {
   protected def groupIntResults(
     results: Seq[(String, scala.collection.Map[Int, Int])]
   ) = {
-    val (columnNames, grouppedResults) = groupResults(results)
-    val intResults = grouppedResults.map { case (personId, personResults) =>
+    val (columnNames, groupedResults) = groupResults(results)
+    val intResults = groupedResults.map { case (personId, personResults) =>
       (personId, personResults.map(_.getOrElse(0)))
     }
     (columnNames, intResults)

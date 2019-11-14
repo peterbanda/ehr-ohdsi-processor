@@ -1,9 +1,9 @@
-package com.bnd.ehrop
+package com.bnd.ehrop.akka
 
-import akka.stream.scaladsl.{FileIO, Flow, Framing, Source}
-import java.util.Date
-
+import akka.stream.scaladsl.Flow
 import akka.NotUsed
+
+import java.util.Date
 
 import scala.collection.mutable
 

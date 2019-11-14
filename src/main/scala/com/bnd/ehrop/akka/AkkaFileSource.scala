@@ -1,4 +1,4 @@
-package com.bnd.ehrop
+package com.bnd.ehrop.akka
 
 import java.io.{BufferedOutputStream, File, FileOutputStream}
 import java.nio.charset.StandardCharsets
@@ -7,7 +7,7 @@ import java.text.{ParseException, ParsePosition, SimpleDateFormat}
 import java.util.{Calendar, Date}
 
 import akka.stream.{IOResult, Materializer}
-import akka.stream.scaladsl.{FileIO, Flow, Framing, Source}
+import akka.stream.scaladsl.{FileIO, Framing, Source}
 import akka.util.ByteString
 import com.typesafe.scalalogging.Logger
 import org.apache.commons.io.IOUtils
@@ -152,6 +152,37 @@ object AkkaFileSource {
           } catch {
             case e: Exception =>
               logger.error(s"Error while processing an file with columns '${intColumnName1}', '${intColumnName2}', and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e;
+          }
+      }
+    )
+
+  def idMilisDateDataCsvSource(
+    inputPath: String,
+    idColumnName: String,
+    dateColumnName: String,
+    dataIntColumnNames: Seq[String]
+  ): Source[(Int, Option[Long], Seq[Option[Int]]), _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val idColumnIndex = indexColumnSafe(idColumnName, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
+        val dataColumnIndeces = dataIntColumnNames.map(indexColumnSafe(_, columnIndexMap, inputPath))
+
+        def asInt(string: String) = string.toDouble.toInt
+        def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
+
+        def id(els: Array[String]) = asInt(els(idColumnIndex).trim)
+        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
+        def intData(els: Array[String]) = dataColumnIndeces.map(index => asIntOptional(els(index).trim))
+
+        els =>
+          try {
+            (id(els), date(els), intData(els))
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${idColumnName}', '${dateColumnName}', '${dateColumnName.mkString(", ")}' at the path '${inputPath}'.", e)
               throw e;
           }
       }

@@ -2,9 +2,10 @@ package com.bnd.ehrop
 
 import java.util.Date
 
-import akka.actor.ActorSystem
-import akka.stream.{ActorMaterializer, Materializer}
-import akka.stream.scaladsl.{Sink, Source}
+import _root_.akka.actor.ActorSystem
+import _root_.akka.stream.{ActorMaterializer, Materializer}
+import _root_.akka.stream.scaladsl.{Sink, Source}
+import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, StatsAccum}
 
 import scala.concurrent.{ExecutionContext, Future}
 

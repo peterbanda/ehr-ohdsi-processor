@@ -1,7 +1,7 @@
-package com.bnd.ehrop
+package com.bnd.ehrop.akka
 
-import akka.stream.{Attributes, UniformFanOutShape}
 import akka.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
+import akka.stream.{Attributes, UniformFanOutShape}
 
 import scala.collection.immutable
 

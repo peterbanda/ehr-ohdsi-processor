@@ -1,7 +1,7 @@
 package com.bnd.ehrop
 
-import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
+import _root_.akka.actor.ActorSystem
+import _root_.akka.stream.ActorMaterializer
 
 trait CalcFeatures extends AppExt {
 
