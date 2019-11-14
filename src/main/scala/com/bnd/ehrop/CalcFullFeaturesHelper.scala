@@ -9,11 +9,16 @@ import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
 import _root_.akka.NotUsed
 import FeatureTypes._
+import com.bnd.ehrop.model.Implicits._
+import com.typesafe.scalalogging.Logger
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
-trait CalcFullFeaturesHelper extends PersonIdCountHelper {
+trait CalcFullFeaturesHelper {
+
+  // logger
+  protected val logger = Logger(this.getClass.getSimpleName)
 
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
   private val baseCountFeatures = 3 * 7
@@ -56,15 +61,17 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
 
       // calc stats for different the periods
       (countHeaders, personCountsMap) <- {
-        val outputLabels = dayIntervals.map(_.label)
-        val dateIntervals = dayIntervals.map { case DayInterval(_, fromDaysShift, toDaysShift) =>
-          dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
+        val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
+          val range = dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
+          (range, label)
         }
 
-        calcFeaturesAllPaths(
+        val features: Seq[TableFeatures[Table]] = TableFeaturesSpecs.apply
+
+        calcFeatures[Table](
           inputRootPath,
-          dateIntervals,
-          outputLabels
+          dateIntervalsWithLabels,
+          features
         ).map { case (headers, results) =>
           logger.info(s"Date filtering with flows finished.")
           val newResults = results.map { case (personId, rawResults) =>
@@ -169,120 +176,86 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
       System.exit(0)
   }
 
-  def calcFeaturesAllPaths(
+  def calcFeatures[T <: Table](
     rootPath: String,
-    idFromToDatesMaps: Seq[Map[Int, (Long, Long)]],
-    outputSuffixes: Seq[String],
-    conceptGroups: Seq[ConceptGroup] = Nil
+    idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
+    tableFeatures: Seq[TableFeatures[T]]
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] = {
-    val paths = IOSpec.dateConceptOuts(rootPath)
+    // create feature executors with data columns
+    val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns)
 
-    val pathsWithOutputs = paths.flatMap { case (path, dateColumn, conceptColumn, outputColName) =>
-      if (fileExists(path)) {
-        val outputCols = IOSpec.outputColumns(outputColName, Some(conceptColumn), outputSuffixes)
-        Some((path, dateColumn, conceptColumn, outputCols))
-      } else {
-        logger.warn(s"File '${path}' does not exist. Skipping.")
-        None
-      }
-    }
+    // for each table create input spec with seq executors
+    val seqExecsWithInputs = tableFeatures.map(_.table).zip(executorsAndColumns).map { case (table, (executors, dataColumns)) =>
+      // group flows based on date filtering and create seq-feature executors
+      val extras = executors.map(_.extra.asInstanceOf[FeatureExecutorExtra[Any]])
 
-    // We use 3 flows/feature generation types:
-    // - 1. counts
-    // - 2. distinct counts
-    // - 3. last defined concepts
-    // - 4. exists group concepts (several possible)
-    val flows = () => {
-      idFromToDatesMaps.map { dateMap =>
-        val countFlow: EHRFlow[Int] = AkkaFlow.countAll[Long, Seq[Option[Int]]]
-        val countDistinct: EHRFlow[mutable.Set[Int]] = Flow[EHRData].collect { case (x, y, Seq(Some(z))) => (x, z)}.via(AkkaFlow.collectDistinct[Int])
-        val lastConceptFlow: EHRFlow[(Long, Int)] = Flow[EHRData].map { case (x, y, z) => (x, y, z.head) }.via(AkkaFlow.lastDefined[Long, Int])
-//        val existConcepFlows: Seq[PersonFlow[Boolean]] = conceptGroups.map { conceptSet =>
-//          Flow[PersonData].collect { case (x, y, Some(z)) => (x, z)}.via(AkkaFlow.existsIn(conceptSet.ids))
-//        }
-
-        val sameFilterFlows = Seq(countFlow, countDistinct, lastConceptFlow)
-
+      val seqExecutors = idDateRangesWithLabels.map { case (dateMap, rangeLabel) =>
         // zip the flows
-        AkkaFlow.filterDate2[Seq[Option[Int]]](dateMap).collect { case Some(x) => x }.via(AkkaStreamUtil.zipNFlows(sameFilterFlows)).asInstanceOf[SeqEHRFlow[Any]]
+        val flows = executors.map(_.flow().asInstanceOf[EHRFlow[Any]])
+        val seqFlow = AkkaFlow.filterDate2[Seq[Option[Int]]](dateMap).collect { case Some(x) => x }.via(AkkaStreamUtil.zipNFlows(flows))
+
+        // add date to output columns
+        val newExtras = extras.map(extra => extra.copy(outputColumnName = extra.outputColumnName + "_" + rangeLabel))
+        SeqFeatureExecutors(seqFlow, newExtras)
       }
-    }
 
-    val postProcess = idFromToDatesMaps.flatMap { _ =>
-      Seq(
-        (value: Any) => value.asInstanceOf[Int],
-        (value: Any) => value.asInstanceOf[mutable.Set[Int]].size,
-        (value: Any) => value.asInstanceOf[(Long, Int)]._2
+      // input spec
+      val input = TableFeatureExecutorInputSpec(
+        table.path(rootPath),
+        table.dateColumn.toString,
+        dataColumns
       )
+
+      (seqExecutors, input)
     }
 
-    val consoleOuts = idFromToDatesMaps.flatMap { _ =>
-      Seq(
-        (map: mutable.Map[Int, Int]) =>  map.map(_._2).sum.toString,
-        (map: mutable.Map[Int, Int]) =>  map.map(_._2).sum.toString,
-        (map: mutable.Map[Int, Int]) =>  map.size.toString
-      )
-    }
-
-    calcCustomFeaturesMultiInputs[Any](pathsWithOutputs, flows, postProcess, consoleOuts)
+    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs)
   }
 
   def calcCustomFeaturesMultiInputs[T](
-    inputs: Seq[(String, String, String, Seq[String])],
-    flows: () => Seq[SeqEHRFlow[T]],
-    postProcess: Seq[T => Int],
-    consoleOuts: Seq[mutable.Map[Int, Int] => String] = Nil)(
+    execsWithInputs: Seq[(Seq[SeqFeatureExecutors[T]], TableFeatureExecutorInputSpec)])(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] =
     // run each in parallel
     Future.sequence(
-      inputs.map(
-        (calcCustomFeatures[T, Int](flows(), postProcess, consoleOuts)(
-          _: String, _: String, _: String, _: Seq[String])
-          ).tupled
-      )
+      execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs)(input) }
     ).map(multiCounts => groupResults(multiCounts.flatten))
 
   private def calcCustomFeatures[T, OUT](
-    flows: Seq[SeqEHRFlow[T]],
-    postProcess: Seq[T => OUT],
-    consoleOuts: Seq[mutable.Map[Int, OUT] => String] = Nil)(
-    inputPath: String,
-    dateColumnName: String,
-    conceptColumnName: String,
-    outputColumnNames: Seq[String],
-    personColumnName: String = Table.person.person_id.toString)(
+    executors: Seq[SeqFeatureExecutors[T]])(
+    input: TableFeatureExecutorInputSpec)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     val start = new Date()
 
     // create a source
-    val personDateDataSource = AkkaFileSource.idMilisDateDataCsvSource(inputPath, personColumnName, dateColumnName, Seq(conceptColumnName))
+    val ehrDataSource = AkkaFileSource.ehrDataCsvSource(input.filePath, input.idColumnName, input.dateColumnName, input.dataColumnNames)
     // zip the flows
-    val zippedFlow = AkkaStreamUtil.zipNFlows(flows)
+    val zippedFlow = AkkaStreamUtil.zipNFlows(executors.map(_.flows))
 
-    personDateDataSource
+    ehrDataSource
       .collect { case (x, Some(y), z) => (x, y, z) }
       .via(zippedFlow)
       .runWith(Sink.head)
       .map { multiResults =>
         val flattenedResults = multiResults.flatten
-        logger.info(s"Processing '${inputPath}' with ${flattenedResults.size} flows done in ${new Date().getTime - start.getTime} ms.")
+        logger.info(s"Processing '${input.filePath}' with ${flattenedResults.size} flows done in ${new Date().getTime - start.getTime} ms.")
 
+        val extras = executors.flatMap(_.extras)
+
+        // post process
         val processedResults =
-          (postProcess, flattenedResults).zipped.map { case (post, results) =>
+          (extras.map(_.postProcess), flattenedResults).zipped.map { case (post, results) =>
             results.map { case (personId, value) => (personId, post(value)) }
           }
 
-        if (consoleOuts.nonEmpty) {
-          (outputColumnNames, processedResults, consoleOuts).zipped.map { case  (outputColumnName, results, consoleOut) =>
-            logger.info(s" Results for '${outputColumnName}': ${consoleOut(results)}")
-            (outputColumnName, results)
-          }
-        } else
-          outputColumnNames.zip(processedResults)
+        // console outs
+        (extras.map(_.outputColumnName), processedResults, extras.map(_.consoleOut)).zipped.map { case  (outputColumnName, results, consoleOut) =>
+          logger.info(s" Results for '${outputColumnName}': ${consoleOut(results)}")
+          (outputColumnName, results)
+        }
       }
   }
 
@@ -318,14 +291,76 @@ trait CalcFullFeaturesHelper extends PersonIdCountHelper {
     tableFeatures: TableFeatures[T]
   ): (Seq[FeatureExecutor[_]], Seq[String]) = {
     // ref columns
-    val refColumns = tableFeatures.extractions.flatMap(_.columns).toSet.toSeq.sorted
+    val refColumns = tableFeatures.extractions.flatMap(_.columns).toSet.toSeq
     val columns = refColumns.map(_.toString)
 
     // create executors
-    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](refColumns)
+    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns)
     val executors = tableFeatures.extractions.map(executorFactory.apply)
 
     (executors, columns)
+  }
+
+  protected def groupResults[T](
+    results: Seq[(String, scala.collection.Map[Int, T])]
+  ): (Seq[String], Seq[(Int, Seq[Option[T]])]) = {
+    val personIds = results.flatMap(_._2.keySet).toSet.toSeq.sorted
+
+    // link person ids with results
+    val personResults = personIds.map { personId =>
+      (personId, results.map(_._2.get(personId)))
+    }
+
+    val columnNames = results.map(_._1)
+    (columnNames, personResults)
+  }
+
+  private def groupLongCounts(
+    counts: Seq[(String, scala.collection.Map[Long, Int])]
+  ): (Seq[String], Seq[(Int, Seq[Int])]) = {
+    val personIds = counts.flatMap(_._2.keySet).toSet.toSeq.sorted
+
+    // link person ids with counts
+    val personCounts = personIds.map { personId =>
+      (personId, counts.map(_._2.get(personId).getOrElse(0)))
+    }
+
+    val columnNames = counts.map(_._1)
+    (columnNames, personCounts.map { case (id, counts) => (id.toInt, counts)})
+  }
+
+  private def personIdMaxDate(
+    inputPath: String,
+    dateColumnName: String,
+    personColumnName: String = Table.person.person_id.toString)(
+    implicit materializer: Materializer, executionContext: ExecutionContext
+  ) = {
+    val start = new Date()
+    val personIdDateSource = AkkaFileSource.intDateCsvSource(inputPath, personColumnName, dateColumnName)
+
+    personIdDateSource.collect { case Some(x) => x }.via(AkkaFlow.max[Date]).runWith(Sink.head).map { maxDates =>
+      logger.info(s"Max person-id date for '${inputPath}' and column '${personColumnName}' done in ${new Date().getTime - start.getTime} ms.")
+      logger.info(s"Total dates: ${maxDates.keySet.size}")
+      maxDates
+    }
+  }
+
+  private def personIdDateMilisCount(
+    inputPath: String,
+    idFromToDatesMap: Map[Int, (Long, Long)],
+    dateColumnName: String,
+    outputColumnName: String,
+    personColumnName: String = Table.person.person_id.toString)(
+    implicit materializer: Materializer, executionContext: ExecutionContext
+  ) = {
+    val start = new Date()
+    val personIdDateSource = AkkaFileSource.intMilisDateCsvSource(inputPath, personColumnName, dateColumnName)
+
+    personIdDateSource.collect { case Some(x) => x }.via(AkkaFlow.count1X(idFromToDatesMap)).runWith(Sink.head).map { counts =>
+      logger.info(s"Person id count for '${inputPath}' filtered between dates done in ${new Date().getTime - start.getTime} ms.")
+      logger.info(s"Total counts: ${counts.map(_._2).sum}")
+      (outputColumnName, counts)
+    }
   }
 }
 
@@ -337,57 +372,93 @@ object FeatureTypes {
 }
 
 case class FeatureExecutor[T](
-  flow: EHRFlow[T],
+  flow: () => EHRFlow[T],
   postProcess: T => Int,
-  consoleOut: mutable.Map[Int, Int] => String
+  consoleOut: mutable.Map[Int, Int] => String,
+  outputColumnName: String
+) {
+  def extra = FeatureExecutorExtra(
+    postProcess,
+    consoleOut,
+    outputColumnName
+  )
+}
+
+case class SeqFeatureExecutors[T](
+  flows: SeqEHRFlow[T],
+  extras: Seq[FeatureExecutorExtra[T]]
 )
 
-class FeatureExecutorFactory[C](refColumns: Seq[C]) {
+case class FeatureExecutorExtra[T](
+  postProcess: T => Int,
+  consoleOut: mutable.Map[Int, Int] => String,
+  outputColumnName: String
+)
+
+case class TableFeatureExecutorInputSpec(
+  filePath: String,
+  dateColumnName: String,
+  dataColumnNames: Seq[String],
+  idColumnName: String = Table.person.person_id.toString
+)
+
+// We use 4 flows/feature generation types:
+// - 1. counts
+// - 2. distinct counts
+// - 3. last defined concepts
+// - 4. exists group concepts (several possible)
+final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
 
   private val columnIndexMap = refColumns.zipWithIndex.toMap
 
   private def columnIndex(col: C): Int =
     columnIndexMap.get(col).getOrElse(throw new IllegalArgumentException(s"Column '${col}' not found."))
 
-  def apply(feature: FeatureExtraction[C]): FeatureExecutor[_] =
+  def apply(feature: FeatureExtraction[C]): FeatureExecutor[_] = {
+    val outputColumnName = tableName + "_" + feature.label
     feature match {
       // count
       case Count() =>
         FeatureExecutor[Int](
-          AkkaFlow.countAll[Long, Seq[Option[Int]]],
+          () => AkkaFlow.countAll[Long, Seq[Option[Int]]],
           identity[Int],
-          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString
+          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
+          outputColumnName
         )
 
       // distinct count
-      case DistinctCount() =>
-        val flow = Flow[EHRData]
-          .collect { case (x, y, Seq(Some(z))) => (x, z) }
+      case DistinctCount(conceptColumn) =>
+        val index = columnIndex(conceptColumn)
+        val flow = () => Flow[EHRData]
+          .map { case (x, y, z) => (x, z(index)) }
+          .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.collectDistinct[Int])
 
-        FeatureExecutor[mutable.Set[Int]](,
+        FeatureExecutor[mutable.Set[Int]](
           flow,
           (value: mutable.Set[Int]) => value.size,
-          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString
+          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
+          outputColumnName
         )
 
       // last defined concept
       case LastDefinedConcept(conceptColumn) =>
         val index = columnIndex(conceptColumn)
-        val flow = Flow[EHRData]
+        val flow = () => Flow[EHRData]
           .map { case (x, y, z) => (x, y, z(index)) }
           .via(AkkaFlow.lastDefined[Long, Int])
 
         FeatureExecutor[(Long, Int)](
           flow,
           (value: (Long, Int)) => value._2,
-          (map: mutable.Map[Int, Int]) => map.size.toString
+          (map: mutable.Map[Int, Int]) => map.size.toString,
+          outputColumnName
         )
 
       // exist concept in group
       case ExistConceptInGroup(conceptColumn, ids, _) =>
         val index = columnIndex(conceptColumn)
-        val flow = Flow[EHRData]
+        val flow = () => Flow[EHRData]
           .map { case (x, y, z) => (x, z(index)) }
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.existsIn(ids))
@@ -395,7 +466,9 @@ class FeatureExecutorFactory[C](refColumns: Seq[C]) {
         FeatureExecutor[Boolean](
           flow,
           (value: Boolean) => if (value) 1 else 0,
-          (map: mutable.Map[Int, Int]) => map.size.toString
+          (map: mutable.Map[Int, Int]) => map.size.toString,
+          outputColumnName
         )
     }
+  }
 }

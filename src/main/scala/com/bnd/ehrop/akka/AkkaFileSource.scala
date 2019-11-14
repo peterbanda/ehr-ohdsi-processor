@@ -157,7 +157,7 @@ object AkkaFileSource {
       }
     )
 
-  def idMilisDateDataCsvSource(
+  def ehrDataCsvSource(
     inputPath: String,
     idColumnName: String,
     dateColumnName: String,

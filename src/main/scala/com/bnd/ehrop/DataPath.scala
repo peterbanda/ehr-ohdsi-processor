@@ -11,10 +11,3 @@ case class DataPath(rootPath: String) {
   val drug_exposure = rootPath + "drug_exposure.csv"
   val death = rootPath + "death.csv"
 }
-
-object DataPath {
-  val trainingFastLane = DataPath("/home/peter/Data/ehr_dream_challenge/training_small/")
-  val evaluationFastLane = DataPath("/home/peter/Data/ehr_dream_challenge/evaluation_small/")
-  val trainingFull = DataPath("/home/peter/Data/ehr_dream_challenge/train/")
-  val evaluationFull = DataPath("/home/peter/Data/ehr_dream_challenge/evaluation/")
-}

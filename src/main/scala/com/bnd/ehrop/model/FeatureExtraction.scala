@@ -9,8 +9,11 @@ case class Count[C]() extends FeatureExtraction[C] {
   override val label = "count"
 }
 
-case class DistinctCount[C]() extends FeatureExtraction[C] {
+case class DistinctCount[C](
+  conceptColumn: C
+) extends FeatureExtraction[C] {
   override val label = "count_distinct"
+  override val columns = Seq(conceptColumn)
 }
 
 case class LastDefinedConcept[C](
@@ -51,6 +54,6 @@ object TableFeatures {
     table: T)(
     extractions: FeatureExtraction[table.Col]*
   ): TableFeatures[T] = apply[T](table)(
-    (Seq(Count[table.Col](), DistinctCount[table.Col]()) ++ extractions.toSeq) :_*
+    (Seq(Count[table.Col]()) ++ extractions.toSeq) :_*
   )
 }
