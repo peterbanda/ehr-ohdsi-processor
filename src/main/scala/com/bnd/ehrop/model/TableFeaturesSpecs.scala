@@ -52,7 +52,7 @@ object TableFeaturesSpecs {
 
 object Implicits {
 
-  private val map: Map[Table, Enumeration#Value] = Seq(
+  private val tableDateColumnMap: Map[Table, Enumeration#Value] = Seq(
     // person
     (Table.person, person.birth_datetime),
     // visit_occurrence
@@ -72,8 +72,8 @@ object Implicits {
   ).toMap
 
   implicit class TableExt(val table: Table) {
-    def dateColumn: table.Col = map.get(table).get.asInstanceOf[table.Col]
+    def dateColumn: table.Col = tableDateColumnMap.get(table).get.asInstanceOf[table.Col]
 
-    def path(rootPath: String) = rootPath + table.name + ".csv"
+    def path(rootPath: String) = rootPath + table.fileName
   }
 }

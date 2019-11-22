@@ -15,12 +15,13 @@ import com.typesafe.scalalogging.Logger
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
-trait CalcFullFeaturesHelper {
+trait CalcFeaturesHelper {
 
   // logger
   protected val logger = Logger(this.getClass.getSimpleName)
 
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
+  // TODO: generalize... not true anymore
   private val baseCountFeatures = 3 * 7
 
   def calcAndExportFeatures(
@@ -29,19 +30,21 @@ trait CalcFullFeaturesHelper {
     outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
-    val dataPath = DataPath(inputRootPath)
+    val tableFile = TableFileName(inputRootPath)
+
+    import Table._
 
     // check mandatory files
-    fileExistsOrError(dataPath.person)
-    fileExistsOrError(dataPath.visit_occurrence)
+    fileExistsOrError(tableFile(person))
+    fileExistsOrError(tableFile(visit_occurrence))
 
     // is a death file provided?
-    val hasDeathFile = fileExists(dataPath.death)
+    val hasDeathFile = fileExists(tableFile(death))
 
     for {
       // visit end dates per person
       visitEndDates <- personIdMaxDate(
-        dataPath.visit_occurrence,
+        tableFile(visit_occurrence),
         Table.visit_occurrence.visit_end_date.toString
       ).map(_.toMap)
 
@@ -51,11 +54,11 @@ trait CalcFullFeaturesHelper {
           val dateRangeIn6MonthsMap = dateIntervalsMilis(visitEndDates, 0, 180)
 
           personIdDateMilisCount(
-            dataPath.death, dateRangeIn6MonthsMap,
+            tableFile(death), dateRangeIn6MonthsMap,
             Table.death.death_date.toString, ""
           ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
         } else {
-          logger.warn(s"Death file '${dataPath.death}' not found. Skipping.")
+          logger.warn(s"Death file '${tableFile(death)}' not found. Skipping.")
           Future(Set[Int]())
         }
 
@@ -75,6 +78,7 @@ trait CalcFullFeaturesHelper {
         ).map { case (headers, results) =>
           logger.info(s"Date filtering with flows finished.")
           val newResults = results.map { case (personId, rawResults) =>
+            // TODO: generalize
             val processedResults = rawResults.zipWithIndex.map { case (result, index) =>
               index % 3 match {
                 case 0 => result.getOrElse(0)
@@ -88,7 +92,7 @@ trait CalcFullFeaturesHelper {
         }
       }
 
-      personOutputSource = csvAsSourceWithTransform(dataPath.person,
+      personOutputSource = csvAsSourceWithTransform(tableFile(person),
         header => {
           val columnIndexMap = header.zipWithIndex.toMap
 
@@ -107,7 +111,7 @@ trait CalcFullFeaturesHelper {
 
           def dateValue(columnName: Table.person.Value)
             (els: Array[String]) =
-            getValue(columnName, els).flatMap(AkkaFileSource.asDate(_, dataPath.person))
+            getValue(columnName, els).flatMap(AkkaFileSource.asDate(_, tableFile(person)))
 
           els =>
             try {

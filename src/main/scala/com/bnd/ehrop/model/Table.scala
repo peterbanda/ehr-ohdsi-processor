@@ -66,3 +66,7 @@ object Table {
     val person_id,death_date,death_datetime,death_type_concept_id,cause_concept_id,cause_source_value,cause_source_concept_id = Value
   }
 }
+
+case class TableFileName(rootPath: String) {
+  def apply(table: Table) = rootPath + table.fileName
+}

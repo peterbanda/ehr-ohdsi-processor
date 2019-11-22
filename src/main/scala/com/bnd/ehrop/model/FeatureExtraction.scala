@@ -3,10 +3,12 @@ package com.bnd.ehrop.model
 trait FeatureExtraction[C] {
   val label: String
   val columns: Seq[C] = Nil
+  val isNumeric: Boolean
 }
 
 case class Count[C]() extends FeatureExtraction[C] {
   override val label = "count"
+  override val isNumeric = true
 }
 
 case class DistinctCount[C](
@@ -14,6 +16,7 @@ case class DistinctCount[C](
 ) extends FeatureExtraction[C] {
   override val label = "count_distinct"
   override val columns = Seq(conceptColumn)
+  override val isNumeric = true
 }
 
 case class LastDefinedConcept[C](
@@ -21,6 +24,7 @@ case class LastDefinedConcept[C](
 ) extends FeatureExtraction[C] {
   override val label = conceptColumn + "_last_defined"
   override val columns = Seq(conceptColumn)
+  override val isNumeric = false
 }
 
 case class ExistConceptInGroup[C](
@@ -30,6 +34,7 @@ case class ExistConceptInGroup[C](
 ) extends FeatureExtraction[C] {
   override val label = conceptColumn + "_exists_" + groupName
   override val columns = Seq(conceptColumn)
+  override val isNumeric = false
 }
 
 trait TableFeatures[T <: Table] {

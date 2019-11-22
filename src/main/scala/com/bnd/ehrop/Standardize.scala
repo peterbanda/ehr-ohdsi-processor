@@ -6,6 +6,7 @@ import _root_.akka.actor.ActorSystem
 import _root_.akka.stream.{ActorMaterializer, Materializer}
 import _root_.akka.stream.scaladsl.{Sink, Source}
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, StatsAccum}
+import com.bnd.ehrop.model.TableFeaturesSpecs
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -19,13 +20,15 @@ trait Standardize extends AppExt {
     "age_at_last_visit", "year_of_birth", "month_of_birth", "visit_end_date"
   )
 
-  private val derivedNumColumnNames = {
-    val paths = IOSpec.dateConceptOuts("")
-
-    paths.flatMap { case (_, _, _, outputColName) =>
-      IOSpec.outputColumns(outputColName, None, dateIntervals.map(_.label))
+  private val derivedNumColumnNames =
+    TableFeaturesSpecs.apply.flatMap { tableFeatures =>
+      val tableName = tableFeatures.table.name
+      dateIntervals.flatMap( dateInterval =>
+        tableFeatures.extractions.flatMap( feature =>
+          if (feature.isNumeric) Some(tableName + "_" + feature.label + "_" + dateInterval.label) else None
+        )
+      )
     }
-  }
 
   def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 
