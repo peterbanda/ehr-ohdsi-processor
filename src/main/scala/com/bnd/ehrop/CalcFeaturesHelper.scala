@@ -4,12 +4,12 @@ import java.util.{Calendar, Date}
 
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
 import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
-import com.bnd.ehrop.model.{DistinctCount, LastDefinedConcept, _}
+import com.bnd.ehrop.model.{DistinctCount, FeatureResults, LastDefinedConcept, _}
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
 import _root_.akka.NotUsed
 import FeatureTypes._
-import com.bnd.ehrop.model.Implicits._
+import com.bnd.ehrop.model.TableExt._
 import com.typesafe.scalalogging.Logger
 
 import scala.collection.mutable
@@ -19,13 +19,11 @@ trait CalcFeaturesHelper {
 
   // logger
   protected val logger = Logger(this.getClass.getSimpleName)
-
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
-  // TODO: generalize... not true anymore
-  private val baseCountFeatures = 3 * 7
 
   def calcAndExportFeatures(
     inputRootPath: String,
+    featureSpecs: Seq[TableFeatures],
     dayIntervals: Seq[DayInterval],
     outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -40,6 +38,9 @@ trait CalcFeaturesHelper {
 
     // is a death file provided?
     val hasDeathFile = fileExists(tableFile(death))
+
+    // features count
+    val featuresCount = featureSpecs.map(_.extractions.size).sum
 
     for {
       // visit end dates per person
@@ -62,35 +63,30 @@ trait CalcFeaturesHelper {
           Future(Set[Int]())
         }
 
-      // calc stats for different the periods
-      (countHeaders, personCountsMap) <- {
+      // calc features for different the periods
+      featureResults <- {
         val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
           val range = dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
           (range, label)
         }
 
-        val features: Seq[TableFeatures[Table]] = TableFeaturesSpecs.apply
-
-        calcFeatures[Table](
+        calcFeatures(
           inputRootPath,
           dateIntervalsWithLabels,
+          featureSpecs
+        ).map { features =>
+          logger.info(s"Feature generation for ${featuresCount} features and ${dayIntervals.size} date intervals finished.")
           features
-        ).map { case (headers, results) =>
-          logger.info(s"Date filtering with flows finished.")
-          val newResults = results.map { case (personId, rawResults) =>
-            // TODO: generalize
-            val processedResults = rawResults.zipWithIndex.map { case (result, index) =>
-              index % 3 match {
-                case 0 => result.getOrElse(0)
-                case 1 => result.getOrElse(0)
-                case 2 => result.getOrElse("")
-              }
-            }
-            (personId, processedResults)
-          }
-          (headers, newResults.toMap)
         }
       }
+
+      // person-features map
+      personFeaturesMap = featureResults.personFeatures.map { case (personId, personResults) =>
+        (personId, personResults.map(_.getOrElse("")))
+      }.toMap
+
+      // not-found values to report if a person not found
+      notFoundValues = featureResults.notFoundValues.map(_.map(_.toString).getOrElse(""))
 
       personOutputSource = csvAsSourceWithTransform(tableFile(person),
         header => {
@@ -109,14 +105,14 @@ trait CalcFeaturesHelper {
             (els: Array[String]) =
             getValue(columnName, els).map(_.toDouble.toInt)
 
-          def dateValue(columnName: Table.person.Value)
+          def dateMilisValue(columnName: Table.person.Value)
             (els: Array[String]) =
-            getValue(columnName, els).flatMap(AkkaFileSource.asDate(_, tableFile(person)))
+            getValue(columnName, els).flatMap(AkkaFileSource.asDateMilis(_, tableFile(person)))
 
           els =>
             try {
               val personId = intValue(Table.person.person_id)(els).getOrElse(throw new RuntimeException(s"Person id missing for the row ${els.mkString(",")}"))
-              val birthDate = dateValue(Table.person.birth_datetime)(els)
+              val birthDate = dateMilisValue(Table.person.birth_datetime)(els)
               val yearOfBirth = intValue(Table.person.year_of_birth)(els)
               val monthOfBirth = intValue(Table.person.month_of_birth)(els)
               val gender = intValue(Table.person.gender_concept_id)(els)
@@ -127,11 +123,11 @@ trait CalcFeaturesHelper {
               if (visitEndDate.isEmpty)
                 logger.warn(s"No end visit found for the person id ${personId}.")
               val ageAtLastVisit = (visitEndDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
-                (endDate.getTime - birthDate.getTime).toDouble / milisInYear
+                (endDate.getTime - birthDate).toDouble / milisInYear
               }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
-              val counts = personCountsMap.get(personId).getOrElse(Seq.fill(baseCountFeatures * dayIntervals.size)(0))
+              val features = personFeaturesMap.get(personId).getOrElse(notFoundValues)
 
               (
                 Seq(
@@ -145,7 +141,7 @@ trait CalcFeaturesHelper {
                   visitEndDate.map(_.getTime).getOrElse("")
                 ) ++ (
                   if (hasDeathFile) Seq(isDeadIn6Months) else Nil
-                ) ++ counts
+                ) ++ features
               ).mkString(",")
             } catch {
               case e: Exception =>
@@ -169,7 +165,7 @@ trait CalcFeaturesHelper {
             "visit_end_date"
           ) ++ (
             if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
-            ) ++ countHeaders
+            ) ++ featureResults.columnNames
         ).mkString(",")
 
         val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
@@ -180,13 +176,12 @@ trait CalcFeaturesHelper {
       System.exit(0)
   }
 
-  def calcFeatures[T <: Table](
+  def calcFeatures(
     rootPath: String,
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
-    tableFeatures: Seq[TableFeatures[T]]
-  )(
+    tableFeatures: Seq[TableFeatures])(
     implicit materializer: Materializer, executionContext: ExecutionContext
-  ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] = {
+  ): Future[FeatureResults] = {
     // create feature executors with data columns
     val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns)
 
@@ -221,11 +216,16 @@ trait CalcFeaturesHelper {
   def calcCustomFeaturesMultiInputs[T](
     execsWithInputs: Seq[(Seq[SeqFeatureExecutors[T]], TableFeatureExecutorInputSpec)])(
     implicit materializer: Materializer, executionContext: ExecutionContext
-  ): Future[(Seq[String], Seq[(Int, Seq[Option[Int]])])] =
+  ): Future[FeatureResults] =
     // run each in parallel
     Future.sequence(
       execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs)(input) }
-    ).map(multiCounts => groupResults(multiCounts.flatten))
+    ).map { multiCounts =>
+      val undefinedValues = execsWithInputs.flatMap(_._1.flatMap(_.extras.map(_.undefinedValue)))
+      val (columnNames, results) = groupResults(multiCounts.flatten, undefinedValues)
+
+      FeatureResults(columnNames, results, undefinedValues)
+    }
 
   private def calcCustomFeatures[T, OUT](
     executors: Seq[SeqFeatureExecutors[T]])(
@@ -291,8 +291,8 @@ trait CalcFeaturesHelper {
       (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
     }
 
-  private def featureExecutorsAndColumns[T <: Table](
-    tableFeatures: TableFeatures[T]
+  private def featureExecutorsAndColumns(
+    tableFeatures: TableFeatures
   ): (Seq[FeatureExecutor[_]], Seq[String]) = {
     // ref columns
     val refColumns = tableFeatures.extractions.flatMap(_.columns).toSet.toSeq
@@ -306,31 +306,24 @@ trait CalcFeaturesHelper {
   }
 
   protected def groupResults[T](
-    results: Seq[(String, scala.collection.Map[Int, T])]
+    results: Seq[(String, scala.collection.Map[Int, T])],
+    notFoundValues: Seq[Option[T]]
   ): (Seq[String], Seq[(Int, Seq[Option[T]])]) = {
     val personIds = results.flatMap(_._2.keySet).toSet.toSeq.sorted
 
     // link person ids with results
     val personResults = personIds.map { personId =>
-      (personId, results.map(_._2.get(personId)))
+      val personResults = results.zip(notFoundValues).map { case ((_, result), notFoundValue) =>
+        result.get(personId) match {
+          case Some(value) => Some(value)
+          case None => notFoundValue
+        }
+      }
+      (personId, personResults)
     }
 
     val columnNames = results.map(_._1)
     (columnNames, personResults)
-  }
-
-  private def groupLongCounts(
-    counts: Seq[(String, scala.collection.Map[Long, Int])]
-  ): (Seq[String], Seq[(Int, Seq[Int])]) = {
-    val personIds = counts.flatMap(_._2.keySet).toSet.toSeq.sorted
-
-    // link person ids with counts
-    val personCounts = personIds.map { personId =>
-      (personId, counts.map(_._2.get(personId).getOrElse(0)))
-    }
-
-    val columnNames = counts.map(_._1)
-    (columnNames, personCounts.map { case (id, counts) => (id.toInt, counts)})
   }
 
   private def personIdMaxDate(
@@ -379,12 +372,14 @@ case class FeatureExecutor[T](
   flow: () => EHRFlow[T],
   postProcess: T => Int,
   consoleOut: mutable.Map[Int, Int] => String,
-  outputColumnName: String
+  outputColumnName: String,
+  undefinedValue: Option[Int] = None,
 ) {
   def extra = FeatureExecutorExtra(
     postProcess,
     consoleOut,
-    outputColumnName
+    outputColumnName,
+    undefinedValue
   )
 }
 
@@ -396,7 +391,8 @@ case class SeqFeatureExecutors[T](
 case class FeatureExecutorExtra[T](
   postProcess: T => Int,
   consoleOut: mutable.Map[Int, Int] => String,
-  outputColumnName: String
+  outputColumnName: String,
+  undefinedValue: Option[Int] = None,
 )
 
 case class TableFeatureExecutorInputSpec(
@@ -424,10 +420,11 @@ final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
       // count
       case Count() =>
         FeatureExecutor[Int](
-          () => AkkaFlow.countAll[Long, Seq[Option[Int]]],
-          identity[Int],
-          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
-          outputColumnName
+          flow = () => AkkaFlow.countAll[Long, Seq[Option[Int]]],
+          postProcess = identity[Int],
+          consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
+          outputColumnName,
+          undefinedValue = Some(0)
         )
 
       // distinct count
@@ -440,9 +437,10 @@ final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
 
         FeatureExecutor[mutable.Set[Int]](
           flow,
-          (value: mutable.Set[Int]) => value.size,
-          (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
-          outputColumnName
+          postProcess = (value: mutable.Set[Int]) => value.size,
+          consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
+          outputColumnName,
+          undefinedValue = Some(0)
         )
 
       // last defined concept
@@ -454,9 +452,10 @@ final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
 
         FeatureExecutor[(Long, Int)](
           flow,
-          (value: (Long, Int)) => value._2,
-          (map: mutable.Map[Int, Int]) => map.size.toString,
-          outputColumnName
+          postProcess = (value: (Long, Int)) => value._2,
+          consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
+          outputColumnName,
+          undefinedValue = None
         )
 
       // exist concept in group
@@ -469,9 +468,10 @@ final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
 
         FeatureExecutor[Boolean](
           flow,
-          (value: Boolean) => if (value) 1 else 0,
-          (map: mutable.Map[Int, Int]) => map.size.toString,
-          outputColumnName
+          postProcess = (value: Boolean) => if (value) 1 else 0,
+          consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
+          outputColumnName,
+          undefinedValue = Some(0)
         )
     }
   }

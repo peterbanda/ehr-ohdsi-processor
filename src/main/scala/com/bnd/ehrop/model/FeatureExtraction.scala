@@ -37,28 +37,28 @@ case class ExistConceptInGroup[C](
   override val isNumeric = false
 }
 
-trait TableFeatures[T <: Table] {
-  val table: T
+trait TableFeatures {
+  val table: Table
   val extractions: Seq[FeatureExtraction[table.Col]]
 }
 
-private abstract class TableFeaturesImpl[T <: Table](val table: T) extends TableFeatures[T]
+private abstract class TableFeaturesImpl(val table: Table) extends TableFeatures
 
 object TableFeatures {
 
-  def apply[T <: Table](
-    _table: T)(
+  def apply(
+    _table: Table)(
     _extractions: FeatureExtraction[_table.Col]*
-  ): TableFeatures[T] =
-    new TableFeaturesImpl[T](_table) {
+  ): TableFeatures =
+    new TableFeaturesImpl(_table) {
       // ugly that we have to cast...
       override val extractions = _extractions.map(_.asInstanceOf[FeatureExtraction[table.Col]])
     }
 
-  def withDefault[T <: Table](
-    table: T)(
+  def withDefault(
+    table: Table)(
     extractions: FeatureExtraction[table.Col]*
-  ): TableFeatures[T] = apply[T](table)(
+  ): TableFeatures = apply(table)(
     (Seq(Count[table.Col]()) ++ extractions.toSeq) :_*
   )
 }

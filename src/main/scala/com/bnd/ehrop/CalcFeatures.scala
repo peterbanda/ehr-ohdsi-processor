@@ -30,7 +30,7 @@ trait CalcFeatures extends AppExt {
     def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 
     CalcFeaturesService.calcAndExportFeatures(
-      withBackslash(inputPath.get), dateIntervals, outputFileName
+      withBackslash(inputPath.get), tableFeatureSpecs, dateIntervals, outputFileName
     ) recover {
       case e: Exception =>
         logger.error(s"Error occurred: ${e.getMessage}. Exiting.")

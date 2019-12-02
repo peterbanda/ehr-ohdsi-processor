@@ -4,7 +4,7 @@ import java.io.{BufferedOutputStream, File, FileOutputStream}
 import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
 import java.text.{ParseException, ParsePosition, SimpleDateFormat}
-import java.util.{Calendar, Date}
+import java.util.{Calendar, Date, TimeZone}
 
 import akka.stream.{IOResult, Materializer}
 import akka.stream.scaladsl.{FileIO, Framing, Source}
@@ -18,6 +18,7 @@ object AkkaFileSource {
 
   // logger
   protected val logger = Logger(this.getClass.getSimpleName)
+  protected val timeZone = TimeZone.getTimeZone("CET") // CEST
 
   def csvAsSource(
     fileName: String,
@@ -213,30 +214,7 @@ object AkkaFileSource {
       }
     )
 
-  protected def asDateX(
-    dateString: String,
-    inputPath: String
-  ) =
-    if (dateString.nonEmpty) {
-      val date = try {
-        val parsePosition = new ParsePosition(0)
-        val dateFormat = new SimpleDateFormat("yyyy-MM-dd")
-        dateFormat.parse(dateString, parsePosition)
-      } catch {
-        case e: ParseException =>
-          logger.error(s"Cannot parse a date string '${dateString}' for the path '${inputPath}'.")
-          throw e
-
-        case e: Exception =>
-          logger.error(s"Fatal problem for a date string '${dateString}' and the path '${inputPath}'.")
-          throw e
-      }
-      Some(date)
-    } else {
-      None
-    }
-
-  protected def asDateMilis(
+  def asDateMilis(
     dateString: String,
     inputPath: String
   ) =
@@ -258,7 +236,7 @@ object AkkaFileSource {
         val month = dateString.substring(5, 7).toInt
         val day = dateString.substring(8, 10).toInt
 
-        val calendar = Calendar.getInstance()
+        val calendar = Calendar.getInstance(timeZone)
         calendar.set(Calendar.YEAR, year)
         calendar.set(Calendar.MONTH, month - 1)
         calendar.set(Calendar.DAY_OF_MONTH, day)

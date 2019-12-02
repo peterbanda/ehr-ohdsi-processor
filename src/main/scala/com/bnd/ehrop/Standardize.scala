@@ -6,7 +6,6 @@ import _root_.akka.actor.ActorSystem
 import _root_.akka.stream.{ActorMaterializer, Materializer}
 import _root_.akka.stream.scaladsl.{Sink, Source}
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, StatsAccum}
-import com.bnd.ehrop.model.TableFeaturesSpecs
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -21,7 +20,7 @@ trait Standardize extends AppExt {
   )
 
   private val derivedNumColumnNames =
-    TableFeaturesSpecs.apply.flatMap { tableFeatures =>
+    tableFeatureSpecs.flatMap { tableFeatures =>
       val tableName = tableFeatures.table.name
       dateIntervals.flatMap( dateInterval =>
         tableFeatures.extractions.flatMap( feature =>

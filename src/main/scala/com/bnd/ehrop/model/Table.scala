@@ -65,6 +65,8 @@ object Table {
   case object death extends Enumeration with Table {
     val person_id,death_date,death_datetime,death_type_concept_id,cause_concept_id,cause_source_value,cause_source_concept_id = Value
   }
+
+  val values: Seq[Table with Enumeration] = Seq(person, visit_occurrence, condition_occurrence, observation, observation_period, measurement, procedure_occurrence, drug_exposure, death)
 }
 
 case class TableFileName(rootPath: String) {
