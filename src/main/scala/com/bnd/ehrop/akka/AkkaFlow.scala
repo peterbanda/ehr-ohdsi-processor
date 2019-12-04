@@ -224,6 +224,19 @@ object AkkaFlow {
         map
     }
 
+  def countIn[T](
+    set: Set[T]
+  ): Flow[(Int, T), mutable.Map[Int, Int], NotUsed] =
+    Flow[(Int, T)].fold[mutable.Map[Int, Int]](
+      mutable.Map[Int, Int]()
+    ) {
+      case (map, (id, value)) =>
+        if (set.contains(value)) {
+          map.update(id, map.getOrElse(id, 0) + 1)
+        }
+        map
+    }
+
   def collectDistinct[T]: Flow[(Int, T), mutable.Map[Int, mutable.Set[T]], NotUsed] =
     Flow[(Int, T)].fold[mutable.Map[Int, mutable.Set[T]]](
       mutable.Map[Int, mutable.Set[T]]()

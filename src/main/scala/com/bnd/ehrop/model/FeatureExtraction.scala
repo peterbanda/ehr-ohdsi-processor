@@ -4,7 +4,12 @@ trait FeatureExtraction[C] {
   val label: String
   val columns: Seq[C] = Nil
   val isNumeric: Boolean
+
+  protected def asLowerCaseUnderscore(string: String) =
+    string.replaceAll("[^\\p{Alnum}]", "_").toLowerCase
 }
+
+// Simple Counts
 
 case class Count[C]() extends FeatureExtraction[C] {
   override val label = "count"
@@ -19,6 +24,8 @@ case class DistinctCount[C](
   override val isNumeric = true
 }
 
+// Concept
+
 case class LastDefinedConcept[C](
   conceptColumn: C
 ) extends FeatureExtraction[C] {
@@ -27,12 +34,31 @@ case class LastDefinedConcept[C](
   override val isNumeric = false
 }
 
-case class ExistConceptInGroup[C](
+// Concept Category
+
+case class ConceptCategoryExists[C](
   conceptColumn: C,
-  ids: Set[Int],
-  groupName: String
+  categoryName: String
 ) extends FeatureExtraction[C] {
-  override val label = conceptColumn + "_exists_" + groupName
+  override val label = conceptColumn + "_exists_" + asLowerCaseUnderscore(categoryName)
+  override val columns = Seq(conceptColumn)
+  override val isNumeric = false
+}
+
+case class ConceptCategoryCount[C](
+  conceptColumn: C,
+  categoryName: String
+) extends FeatureExtraction[C] {
+  override val label = conceptColumn + "_count_" + asLowerCaseUnderscore(categoryName)
+  override val columns = Seq(conceptColumn)
+  override val isNumeric = true
+}
+
+case class ConceptCategoryIsLastDefined[C](
+  conceptColumn: C,
+  categoryName: String
+) extends FeatureExtraction[C] {
+  override val label = conceptColumn + "_last_defined_" + asLowerCaseUnderscore(categoryName)
   override val columns = Seq(conceptColumn)
   override val isNumeric = false
 }

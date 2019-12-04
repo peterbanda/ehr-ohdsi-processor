@@ -33,6 +33,7 @@ trait CalcFeatures extends AppExt {
       withBackslash(inputPath.get),
       tableFeatureSpecs,
       dateIntervals,
+      conceptCategories,
       outputFileName
     ) recover {
       case e: Exception =>

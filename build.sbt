@@ -2,9 +2,9 @@ organization := "com.bnd"
 
 name := "ehr-ohdsi-processor"
 
-version := "0.1.0"
+version := "0.1.1"
 
-scalaVersion := "2.12.10" ///"2.11.12"
+scalaVersion := "2.12.10"
 
 resolvers ++= Seq(
   Resolver.mavenLocal

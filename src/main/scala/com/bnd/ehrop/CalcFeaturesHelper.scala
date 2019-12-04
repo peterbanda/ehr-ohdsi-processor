@@ -3,16 +3,14 @@ package com.bnd.ehrop
 import java.util.{Calendar, Date}
 
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
-import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, writeStringAsStream}
-import com.bnd.ehrop.model.{DistinctCount, FeatureResults, LastDefinedConcept, _}
+import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform}
+import com.bnd.ehrop.model._
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
-import _root_.akka.NotUsed
-import FeatureTypes._
+import FeatureCalcTypes._
 import com.bnd.ehrop.model.TableExt._
 import com.typesafe.scalalogging.Logger
 
-import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
 trait CalcFeaturesHelper {
@@ -25,6 +23,7 @@ trait CalcFeaturesHelper {
     inputRootPath: String,
     featureSpecs: Seq[TableFeatures],
     dayIntervals: Seq[DayInterval],
+    conceptCategories: Seq[ConceptCategory],
     outputFileName: Option[String] = None)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
@@ -73,9 +72,10 @@ trait CalcFeaturesHelper {
         calcFeatures(
           inputRootPath,
           dateIntervalsWithLabels,
-          featureSpecs
+          featureSpecs,
+          conceptCategories
         ).map { features =>
-          logger.info(s"Feature generation for ${featureSpecsCount} feature specs and ${dayIntervals.size} date intervals finished.")
+          logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dayIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished.")
           features
         }
       }
@@ -179,11 +179,15 @@ trait CalcFeaturesHelper {
   def calcFeatures(
     rootPath: String,
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
-    tableFeatures: Seq[TableFeatures])(
+    tableFeatures: Seq[TableFeatures],
+    conceptCategories: Seq[ConceptCategory]
+  )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[FeatureResults] = {
+
     // create feature executors with data columns
-    val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns)
+    val categoryNameConceptIdsMap = conceptCategories.map(category => (category.name, category.conceptIds)).toMap
+    val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns(categoryNameConceptIdsMap))
 
     // for each table create input spec with seq executors
     val seqExecsWithInputs = tableFeatures.map(_.table).zip(executorsAndColumns).map { case (table, (executors, dataColumns)) =>
@@ -298,6 +302,7 @@ trait CalcFeaturesHelper {
     }
 
   private def featureExecutorsAndColumns(
+    categoryNameConceptIdsMap: Map[String, Set[Int]])(
     tableFeatures: TableFeatures
   ): (Seq[FeatureExecutor[_]], Seq[String]) = {
     // ref columns
@@ -305,7 +310,7 @@ trait CalcFeaturesHelper {
     val columns = refColumns.map(_.toString)
 
     // create executors
-    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns)
+    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns, categoryNameConceptIdsMap)
     val executors = tableFeatures.extractions.map(executorFactory.apply)
 
     (executors, columns)
@@ -363,122 +368,6 @@ trait CalcFeaturesHelper {
       logger.info(s"Person id count for '${inputPath}' filtered between dates done in ${new Date().getTime - start.getTime} ms.")
       logger.info(s"Total counts: ${counts.map(_._2).sum}")
       (outputColumnName, counts)
-    }
-  }
-}
-
-object FeatureTypes {
-  // id, date, and additional data
-  type EHRData = (Int, Long, Seq[Option[Int]])
-  type EHRFlow[T] = Flow[EHRData, mutable.Map[Int, T], NotUsed]
-  type SeqEHRFlow[T] = Flow[EHRData, Seq[mutable.Map[Int, T]], NotUsed]
-}
-
-case class FeatureExecutor[T](
-  flow: () => EHRFlow[T],
-  postProcess: T => Int,
-  consoleOut: mutable.Map[Int, Int] => String,
-  outputColumnName: String,
-  undefinedValue: Option[Int] = None,
-) {
-  def extra = FeatureExecutorExtra(
-    postProcess,
-    consoleOut,
-    outputColumnName,
-    undefinedValue
-  )
-}
-
-case class SeqFeatureExecutors[T](
-  flows: SeqEHRFlow[T],
-  extras: Seq[FeatureExecutorExtra[T]]
-)
-
-case class FeatureExecutorExtra[T](
-  postProcess: T => Int,
-  consoleOut: mutable.Map[Int, Int] => String,
-  outputColumnName: String,
-  undefinedValue: Option[Int] = None,
-)
-
-case class TableFeatureExecutorInputSpec(
-  filePath: String,
-  dateColumnName: String,
-  dataColumnNames: Seq[String],
-  idColumnName: String = Table.person.person_id.toString
-)
-
-// We use 4 flows/feature generation types:
-// - 1. counts
-// - 2. distinct counts
-// - 3. last defined concepts
-// - 4. exists group concepts (several possible)
-final class FeatureExecutorFactory[C](tableName: String, refColumns: Seq[C]) {
-
-  private val columnIndexMap = refColumns.zipWithIndex.toMap
-
-  private def columnIndex(col: C): Int =
-    columnIndexMap.get(col).getOrElse(throw new IllegalArgumentException(s"Column '${col}' not found."))
-
-  def apply(feature: FeatureExtraction[C]): FeatureExecutor[_] = {
-    val outputColumnName = tableName + "_" + feature.label
-    feature match {
-      // count
-      case Count() =>
-        FeatureExecutor[Int](
-          flow = () => AkkaFlow.countAll[Long, Seq[Option[Int]]],
-          postProcess = identity[Int],
-          consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
-          outputColumnName,
-          undefinedValue = Some(0)
-        )
-
-      // distinct count
-      case DistinctCount(conceptColumn) =>
-        val index = columnIndex(conceptColumn)
-        val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, z(index)) }
-          .collect { case (x, Some(z)) => (x, z) }
-          .via(AkkaFlow.collectDistinct[Int])
-
-        FeatureExecutor[mutable.Set[Int]](
-          flow,
-          postProcess = (value: mutable.Set[Int]) => value.size,
-          consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
-          outputColumnName,
-          undefinedValue = Some(0)
-        )
-
-      // last defined concept
-      case LastDefinedConcept(conceptColumn) =>
-        val index = columnIndex(conceptColumn)
-        val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, y, z(index)) }
-          .via(AkkaFlow.lastDefined[Long, Int])
-
-        FeatureExecutor[(Long, Int)](
-          flow,
-          postProcess = (value: (Long, Int)) => value._2,
-          consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
-          outputColumnName,
-          undefinedValue = None
-        )
-
-      // exist concept in group
-      case ExistConceptInGroup(conceptColumn, ids, _) =>
-        val index = columnIndex(conceptColumn)
-        val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, z(index)) }
-          .collect { case (x, Some(z)) => (x, z) }
-          .via(AkkaFlow.existsIn(ids))
-
-        FeatureExecutor[Boolean](
-          flow,
-          postProcess = (value: Boolean) => if (value) 1 else 0,
-          consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
-          outputColumnName,
-          undefinedValue = Some(0)
-        )
     }
   }
 }

@@ -1,5 +1,7 @@
 package com.bnd.ehrop
 
+import java.util
+
 import com.bnd.ehrop.model._
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.Logger
@@ -85,16 +87,44 @@ trait AppExt {
           case "LastDefinedConcept" =>
             LastDefinedConcept[table.Col](withName(conceptColumnString))
 
-          case "ExistConceptInGroup" =>
-            ExistConceptInGroup[table.Col](
+          case "ConceptCategoryExists" =>
+            ConceptCategoryExists[table.Col](
               withName(conceptColumnString),
-              extractionObject.get("ids").unwrapped().asInstanceOf[Seq[Int]].toSet,
-              extractionObject.get("groupName").unwrapped().asInstanceOf[String]
+              extractionObject.get("categoryName").unwrapped().asInstanceOf[String]
             )
+
+          case "ConceptCategoryCount" =>
+            ConceptCategoryCount[table.Col](
+              withName(conceptColumnString),
+              extractionObject.get("categoryName").unwrapped().asInstanceOf[String]
+            )
+
+          case "ConceptCategoryIsLastDefined" =>
+            ConceptCategoryIsLastDefined[table.Col](
+              withName(conceptColumnString),
+              extractionObject.get("categoryName").unwrapped().asInstanceOf[String]
+            )
+
+          case _ => throw new IllegalArgumentException(s"Feature extraction type '${extractionType}' not recognized.")
         }
       }
 
       TableFeatures(table)(extractions :_*)
+    }
+  }
+
+  lazy val conceptCategories: Seq[ConceptCategory] = {
+    if (!config.hasPath("conceptCategories")) {
+      val message = "No 'conceptCategories' provided in application.conf."
+      logger.warn(message)
+      Nil
+    } else {
+      config.getObjectList("conceptCategories").map(configObject =>
+        ConceptCategory(
+          configObject.get("name").unwrapped().asInstanceOf[String],
+          configObject.get("conceptIds").unwrapped().asInstanceOf[util.ArrayList[Int]].toSeq.toSet,
+        )
+      )
     }
   }
 }
