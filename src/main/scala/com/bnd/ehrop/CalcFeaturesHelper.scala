@@ -39,8 +39,8 @@ trait CalcFeaturesHelper {
     // is a death file provided?
     val hasDeathFile = fileExists(tableFile(death))
 
-    // features count
-    val featuresCount = featureSpecs.map(_.extractions.size).sum
+    // feature specs count
+    val featureSpecsCount = featureSpecs.map(_.extractions.size).sum
 
     for {
       // visit end dates per person
@@ -75,7 +75,7 @@ trait CalcFeaturesHelper {
           dateIntervalsWithLabels,
           featureSpecs
         ).map { features =>
-          logger.info(s"Feature generation for ${featuresCount} features and ${dayIntervals.size} date intervals finished.")
+          logger.info(s"Feature generation for ${featureSpecsCount} feature specs and ${dayIntervals.size} date intervals finished.")
           features
         }
       }
@@ -216,16 +216,22 @@ trait CalcFeaturesHelper {
   def calcCustomFeaturesMultiInputs[T](
     execsWithInputs: Seq[(Seq[SeqFeatureExecutors[T]], TableFeatureExecutorInputSpec)])(
     implicit materializer: Materializer, executionContext: ExecutionContext
-  ): Future[FeatureResults] =
+  ): Future[FeatureResults] = {
+    val undefinedValues = execsWithInputs.flatMap(_._1.flatMap(_.extras.map(_.undefinedValue)))
+
     // run each in parallel
-    Future.sequence(
-      execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs)(input) }
-    ).map { multiCounts =>
-      val undefinedValues = execsWithInputs.flatMap(_._1.flatMap(_.extras.map(_.undefinedValue)))
-      val (columnNames, results) = groupResults(multiCounts.flatten, undefinedValues)
+    for {
+      rawResults <- Future.sequence(
+        execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs)(input) }
+      )
+    } yield {
+      val flattenedResults = rawResults.flatten
+      logger.info(s"Grouping ${flattenedResults.size} features/results.")
+      val (columnNames, results) = groupResults(flattenedResults, undefinedValues)
 
       FeatureResults(columnNames, results, undefinedValues)
     }
+  }
 
   private def calcCustomFeatures[T, OUT](
     executors: Seq[SeqFeatureExecutors[T]])(
