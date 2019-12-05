@@ -17,10 +17,18 @@ case class Count[C]() extends FeatureExtraction[C] {
 }
 
 case class DistinctCount[C](
-  conceptColumn: C
+  column: C
 ) extends FeatureExtraction[C] {
-  override val label = "count_distinct"
-  override val columns = Seq(conceptColumn)
+  override val label = column + "_distinct_count"
+  override val columns = Seq(column)
+  override val isNumeric = true
+}
+
+case class Sum[C](
+  column: C
+) extends FeatureExtraction[C] {
+  override val label = column + "_sum"
+  override val columns = Seq(column)
   override val isNumeric = true
 }
 

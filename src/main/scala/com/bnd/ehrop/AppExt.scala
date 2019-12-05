@@ -75,14 +75,16 @@ trait AppExt {
 
       val extractions: Seq[FeatureExtraction[table.Col]] = tableObject.toConfig.getObjectList("extractions").map { extractionObject =>
         val extractionType = extractionObject.get("type").unwrapped().asInstanceOf[String]
-        def conceptColumnString = extractionObject.get("conceptColumn").unwrapped().asInstanceOf[String]
+
+        def asString(fieldName: String) = extractionObject.get(fieldName).unwrapped().asInstanceOf[String]
+        def conceptColumnString = asString("conceptColumn")
 
         extractionType match {
           case "Count" =>
             Count[table.Col]()
 
           case "DistinctCount" =>
-            DistinctCount[table.Col](withName(conceptColumnString))
+            DistinctCount[table.Col](withName(asString("column")))
 
           case "LastDefinedConcept" =>
             LastDefinedConcept[table.Col](withName(conceptColumnString))
