@@ -133,4 +133,14 @@ trait AppExt {
       )
     }
   }
+
+  val timeZoneCode = {
+    if (!config.hasPath("timeZone.code")) {
+      val message = "No 'timeZone.code' provided in application.conf. Exiting."
+      logger.error(message)
+      System.exit(1)
+    }
+
+    config.getString("timeZone.code")
+  }
 }

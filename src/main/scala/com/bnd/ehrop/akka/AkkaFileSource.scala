@@ -18,7 +18,7 @@ object AkkaFileSource {
 
   // logger
   protected val logger = Logger(this.getClass.getSimpleName)
-  protected val timeZone = TimeZone.getTimeZone("CET") // CEST
+  val defaultTimeZone = TimeZone.getTimeZone("CET") // CEST
 
   def csvAsSource(
     fileName: String,
@@ -102,67 +102,12 @@ object AkkaFileSource {
       }
     )
 
-  def intMilisDateCsvSource(
-    inputPath: String,
-    intColumnName: String,
-    dateColumnName: String
-  ): Source[Option[(Int, Long)], _] =
-    csvAsSourceWithTransform(inputPath,
-      header => {
-        val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
-        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
-
-        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
-        def dateSafe(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
-
-        els =>
-          try {
-            dateSafe(els).map((int(els), _))
-          } catch {
-            case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
-              throw e;
-          }
-      }
-    )
-
-  def int2MilisDateCsvSource(
-    inputPath: String,
-    intColumnName1: String,
-    dateColumnName: String,
-    intColumnName2: String
-  ): Source[(Int, Option[Long], Option[Int]), _] =
-    csvAsSourceWithTransform(inputPath,
-      header => {
-        val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex1 = indexColumnSafe(intColumnName1, columnIndexMap, inputPath)
-        val intColumnIndex2 = indexColumnSafe(intColumnName2, columnIndexMap, inputPath)
-        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
-
-        def asInt(string: String) = string.toDouble.toInt
-        def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
-
-        def int1(els: Array[String]) = asInt(els(intColumnIndex1).trim)
-        def int2(els: Array[String]) = asIntOptional(els(intColumnIndex2).trim)
-        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
-
-        els =>
-          try {
-            (int1(els), date(els), int2(els))
-          } catch {
-            case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${intColumnName1}', '${intColumnName2}', and '${dateColumnName}' at the path '${inputPath}'.", e)
-              throw e;
-          }
-      }
-    )
-
   def ehrDataCsvSource(
     inputPath: String,
     idColumnName: String,
     dateColumnName: String,
-    dataIntColumnNames: Seq[String]
+    dataIntColumnNames: Seq[String],
+    timeZone: TimeZone = defaultTimeZone
   ): Source[(Int, Option[Long], Seq[Option[Int]]), _] =
     csvAsSourceWithTransform(inputPath,
       header => {
@@ -175,7 +120,7 @@ object AkkaFileSource {
         def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
 
         def id(els: Array[String]) = asInt(els(idColumnIndex).trim)
-        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath)
+        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
         def intData(els: Array[String]) = dataColumnIndeces.map(index => asIntOptional(els(index).trim))
 
         els =>
@@ -192,7 +137,8 @@ object AkkaFileSource {
   def intDateCsvSource(
     inputPath: String,
     intColumnName: String,
-    dateColumnName: String
+    dateColumnName: String,
+    timeZone: TimeZone = defaultTimeZone
   ): Source[Option[(Int, Date)], _] =
     csvAsSourceWithTransform(inputPath,
       header => {
@@ -201,7 +147,7 @@ object AkkaFileSource {
         val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
 
         def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
-        def dateSafe(els: Array[String]): Option[Date] = asDate(els(dateColumnIndex).trim, inputPath)
+        def dateSafe(els: Array[String]): Option[Date] = asDate(els(dateColumnIndex).trim, inputPath, timeZone)
 
         els =>
           try {
@@ -214,21 +160,50 @@ object AkkaFileSource {
       }
     )
 
+  def intMilisDateCsvSource(
+    inputPath: String,
+    intColumnName: String,
+    dateColumnName: String,
+    timeZone: TimeZone = defaultTimeZone
+  ): Source[Option[(Int, Long)], _] =
+    csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
+
+        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
+        def dateSafe(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
+
+        els =>
+          try {
+            dateSafe(els).map((int(els), _))
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e;
+          }
+      }
+    )
+
   def asDateMilis(
     dateString: String,
-    inputPath: String
+    inputPath: String,
+    timeZone: TimeZone = defaultTimeZone
   ) =
-    asCalendar(dateString, inputPath).map(_.getTimeInMillis)
+    asCalendar(dateString, inputPath, timeZone).map(_.getTimeInMillis)
 
   def asDate(
     dateString: String,
-    inputPath: String
+    inputPath: String,
+    timeZone: TimeZone = defaultTimeZone
   ) =
-    asCalendar(dateString, inputPath).map(_.getTime)
+    asCalendar(dateString, inputPath, timeZone).map(_.getTime)
 
   protected def asCalendar(
     dateString: String,
-    inputPath: String
+    inputPath: String,
+    timeZone: TimeZone = defaultTimeZone
   ) =
     if (dateString.nonEmpty) {
       val date = try {

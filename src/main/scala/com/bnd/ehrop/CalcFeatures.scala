@@ -1,5 +1,7 @@
 package com.bnd.ehrop
 
+import java.util.TimeZone
+
 import _root_.akka.actor.ActorSystem
 import _root_.akka.stream.ActorMaterializer
 
@@ -34,6 +36,7 @@ trait CalcFeatures extends AppExt {
       tableFeatureSpecs,
       dateIntervals,
       conceptCategories,
+      TimeZone.getTimeZone(timeZoneCode),
       outputFileName
     ) recover {
       case e: Exception =>
