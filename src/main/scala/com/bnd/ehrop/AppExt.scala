@@ -78,13 +78,17 @@ trait AppExt {
 
         def asString(fieldName: String) = extractionObject.get(fieldName).unwrapped().asInstanceOf[String]
         def conceptColumnString = asString("conceptColumn")
+        def columnString = asString("column")
 
         extractionType match {
           case "Count" =>
             Count[table.Col]()
 
           case "DistinctCount" =>
-            DistinctCount[table.Col](withName(asString("column")))
+            DistinctCount[table.Col](withName(columnString))
+
+          case "Sum" =>
+            Sum[table.Col](withName(columnString))
 
           case "LastDefinedConcept" =>
             LastDefinedConcept[table.Col](withName(conceptColumnString))

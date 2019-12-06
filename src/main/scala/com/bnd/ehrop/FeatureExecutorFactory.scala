@@ -41,13 +41,14 @@ case class TableFeatureExecutorInputSpec(
   idColumnName: String = Table.person.person_id.toString
 )
 
-// We use 6 flows/feature generation types:
+// We use 7 flows/feature generation types:
 // - 1. count
 // - 2. distinct (concept) count
-// - 3. last defined concept
-// - 4. exists in a concept category
-// - 5. count in a concept category
-// - 6. is last in a concept category
+// - 3. sum
+// - 4. last defined concept
+// - 5. exists in a concept category
+// - 6. count in a concept category
+// - 7. is last in a concept category
 final class FeatureExecutorFactory[C](
   tableName: String,
   refColumns: Seq[C],
@@ -63,8 +64,12 @@ final class FeatureExecutorFactory[C](
     feature match {
       // 1. count
       case Count() =>
+        val flow = () => Flow[EHRData]
+          .map { case (x, _, _) => x } // we take only the ids
+          .via(AkkaFlow.countAll)
+
         FeatureExecutor[Int](
-          flow = () => AkkaFlow.countAll[Long, Seq[Option[Int]]],
+          flow,
           postProcess = identity[Int],
           consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
           outputColumnName,
@@ -72,10 +77,10 @@ final class FeatureExecutorFactory[C](
         )
 
       // 2. distinct (concept) count
-      case DistinctCount(conceptColumn) =>
-        val index = columnIndex(conceptColumn)
+      case DistinctCount(column) =>
+        val index = columnIndex(column)
         val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, z(index)) }
+          .map { case (x, _, z) => (x, z(index)) }
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.collectDistinct[Int])
 
@@ -87,7 +92,23 @@ final class FeatureExecutorFactory[C](
           undefinedValue = Some(0)
         )
 
-      // 3. last defined concept
+      // 3. sum
+      case Sum(column) =>
+        val index = columnIndex(column)
+        val flow = () => Flow[EHRData]
+          .map { case (x, _, z) => (x, z(index)) }
+          .collect { case (x, Some(z)) => (x, z) }
+          .via(AkkaFlow.sum)
+
+        FeatureExecutor[Int](
+          flow,
+          postProcess = identity[Int],
+          consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
+          outputColumnName,
+          undefinedValue = Some(0)
+        )
+
+      // 4. last defined concept
       case LastDefinedConcept(conceptColumn) =>
         val index = columnIndex(conceptColumn)
         val flow = () => Flow[EHRData]
@@ -102,12 +123,12 @@ final class FeatureExecutorFactory[C](
           undefinedValue = None
         )
 
-      // 4. checks if there is a concept that belongs to a given category
+      // 5. checks if there is a concept that belongs to a given category
       case ConceptCategoryExists(conceptColumn, categoryName) =>
         val ids = categoryNameConceptIdsMap.get(categoryName).getOrElse(throw new IllegalArgumentException(s"Concept category '${categoryName}' not found."))
         val index = columnIndex(conceptColumn)
         val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, z(index)) }
+          .map { case (x, _, z) => (x, z(index)) }
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.existsIn(ids))
 
@@ -119,12 +140,12 @@ final class FeatureExecutorFactory[C](
           undefinedValue = Some(0)
         )
 
-      // 5. counts all the concepts that belongs to a given category
+      // 6. counts all the concepts that belongs to a given category
       case ConceptCategoryCount(conceptColumn, categoryName) =>
         val ids = categoryNameConceptIdsMap.get(categoryName).getOrElse(throw new IllegalArgumentException(s"Concept category '${categoryName}' not found."))
         val index = columnIndex(conceptColumn)
         val flow = () => Flow[EHRData]
-          .map { case (x, y, z) => (x, z(index)) }
+          .map { case (x, _, z) => (x, z(index)) }
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.countIn(ids))
 
@@ -136,7 +157,7 @@ final class FeatureExecutorFactory[C](
           undefinedValue = Some(0)
         )
 
-      // 6. checks if the last-defined concept belongs to a given category
+      // 7. checks if the last-defined concept belongs to a given category
       case ConceptCategoryIsLastDefined(conceptColumn, categoryName) =>
         val ids = categoryNameConceptIdsMap.get(categoryName).getOrElse(throw new IllegalArgumentException(s"Concept category '${categoryName}' not found."))
         val index = columnIndex(conceptColumn)

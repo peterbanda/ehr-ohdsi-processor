@@ -117,12 +117,21 @@ object AkkaFlow {
         map
     }
 
-  def countAll[T1, T2]: Flow[(Int, T1, T2), mutable.Map[Int, Int], NotUsed] =
-    Flow[(Int, T1, T2)].fold[mutable.Map[Int, Int]](
+  def countAll: Flow[Int, mutable.Map[Int, Int], NotUsed] =
+    Flow[Int].fold[mutable.Map[Int, Int]](
       mutable.Map[Int, Int]()
     ) {
-      case (map, (id, _, _)) =>
+      case (map, id) =>
         map.update(id, map.getOrElse(id, 0) + 1)
+        map
+    }
+
+  def sum: Flow[(Int, Int), mutable.Map[Int, Int], NotUsed] =
+    Flow[(Int, Int)].fold[mutable.Map[Int, Int]](
+      mutable.Map[Int, Int]()
+    ) {
+      case (map, (id, value)) =>
+        map.update(id, map.getOrElse(id, 0) + value)
         map
     }
 
