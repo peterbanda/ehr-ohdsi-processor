@@ -52,10 +52,27 @@ trait CalcFeaturesHelper {
         timeZone
       ).map(_.toMap)
 
+      // visit start dates per person
+      visitStartDates <- personIdMaxDate(
+        tableFile(visit_occurrence),
+        Table.visit_occurrence.visit_start_date.toString,
+        timeZone
+      ).map(_.toMap)
+
+      personIds = (visitStartDates.keys ++ visitEndDates.keys).toSet
+      visitDates = personIds.flatMap { personId =>
+        (visitEndDates.get(personId) match {
+          case Some(date) => Some(date)
+          case None => visitStartDates.get(personId) // fall-back to start date
+        }).map { date =>
+          (personId, date)
+        }
+      }.toMap
+
       // calc death counts in 6 months and turn death counts into 'hasDied' flags
       deadIn6MonthsPersonIds <-
         if (hasDeathFile) {
-          val dateRangeIn6MonthsMap = dateIntervalsMilis(visitEndDates, 0, 180)
+          val dateRangeIn6MonthsMap = dateIntervalsMilis(visitDates, 0, 180)
 
           personIdDateMilisCount(
             tableFile(death),
@@ -72,7 +89,7 @@ trait CalcFeaturesHelper {
       // calc features for different the periods
       featureResults <- {
         val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
-          val range = dateIntervalsMilis(visitEndDates, fromDaysShift, toDaysShift)
+          val range = dateIntervalsMilis(visitDates, fromDaysShift, toDaysShift)
           (range, label)
         }
 
@@ -127,7 +144,7 @@ trait CalcFeaturesHelper {
               val race = intValue(Table.person.race_concept_id)(els)
               val ethnicity = intValue(Table.person.ethnicity_concept_id)(els)
 
-              val visitEndDate = visitEndDates.get(personId)
+              val visitEndDate = visitDates.get(personId)
               if (visitEndDate.isEmpty)
                 logger.warn(s"No end visit found for the person id ${personId}.")
               val ageAtLastVisit = (visitEndDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
