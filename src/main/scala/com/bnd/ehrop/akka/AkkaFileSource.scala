@@ -204,22 +204,13 @@ object AkkaFileSource {
     dateString: String,
     inputPath: String,
     timeZone: TimeZone = defaultTimeZone
-  ) =
+  ): Option[Calendar] =
     if (dateString.nonEmpty) {
       val date = try {
         val year = dateString.substring(0, 4).toInt
         val month = dateString.substring(5, 7).toInt
         val day = dateString.substring(8, 10).toInt
-
-        val calendar = Calendar.getInstance(timeZone)
-        calendar.set(Calendar.YEAR, year)
-        calendar.set(Calendar.MONTH, month - 1)
-        calendar.set(Calendar.DAY_OF_MONTH, day)
-        calendar.set(Calendar.HOUR_OF_DAY, 0)
-        calendar.set(Calendar.MINUTE, 0)
-        calendar.set(Calendar.SECOND, 0)
-        calendar.set(Calendar.MILLISECOND, 0)
-        calendar
+        toCalendar(year, month, day, timeZone)
       } catch {
         case e: ParseException =>
           logger.error(s"Cannot parse a date string '${dateString}' for the path '${inputPath}'.", e)
@@ -233,6 +224,23 @@ object AkkaFileSource {
     } else {
       None
     }
+
+  def toCalendar(
+    year: Int,
+    month: Int,
+    day: Int,
+    timeZone: TimeZone = defaultTimeZone
+  ): Calendar = {
+    val calendar = Calendar.getInstance(timeZone)
+    calendar.set(Calendar.YEAR, year)
+    calendar.set(Calendar.MONTH, month - 1)
+    calendar.set(Calendar.DAY_OF_MONTH, day)
+    calendar.set(Calendar.HOUR_OF_DAY, 0)
+    calendar.set(Calendar.MINUTE, 0)
+    calendar.set(Calendar.SECOND, 0)
+    calendar.set(Calendar.MILLISECOND, 0)
+    calendar
+  }
 
   def fileSource(
     fileName: String,

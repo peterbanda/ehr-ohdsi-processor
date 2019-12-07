@@ -137,12 +137,17 @@ trait CalcFeaturesHelper {
           els =>
             try {
               val personId = intValue(Table.person.person_id)(els).getOrElse(throw new RuntimeException(s"Person id missing for the row ${els.mkString(",")}"))
-              val birthDate = dateMilisValue(Table.person.birth_datetime)(els)
               val yearOfBirth = intValue(Table.person.year_of_birth)(els)
               val monthOfBirth = intValue(Table.person.month_of_birth)(els)
+              val dayOfBirth = intValue(Table.person.day_of_birth)(els)
               val gender = intValue(Table.person.gender_concept_id)(els)
               val race = intValue(Table.person.race_concept_id)(els)
               val ethnicity = intValue(Table.person.ethnicity_concept_id)(els)
+
+              // val birthDate = dateMilisValue(Table.person.birth_datetime)(els)
+              val birthDate = yearOfBirth.map { year =>
+                AkkaFileSource.toCalendar(year, monthOfBirth.getOrElse(1), dayOfBirth.getOrElse(1), timeZone).getTime.getTime
+              }
 
               val visitEndDate = visitDates.get(personId)
               if (visitEndDate.isEmpty)
