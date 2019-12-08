@@ -140,7 +140,8 @@ trait CalcFeaturesHelper {
               val yearOfBirth = intValue(Table.person.year_of_birth)(els)
               val monthOfBirth = intValue(Table.person.month_of_birth)(els)
               val dayOfBirth = intValue(Table.person.day_of_birth)(els)
-              val gender = intValue(Table.person.gender_concept_id)(els)
+              val genderConcept = intValue(Table.person.gender_concept_id)(els)
+              val genderBinarized = genderConcept.map { genderConcept => if (genderConcept == 8532) 1 else 0 }
               val race = intValue(Table.person.race_concept_id)(els)
               val ethnicity = intValue(Table.person.ethnicity_concept_id)(els)
 
@@ -162,7 +163,7 @@ trait CalcFeaturesHelper {
               (
                 Seq(
                   personId,
-                  gender.getOrElse(""),
+                  genderBinarized.getOrElse(""),
                   race.getOrElse(""),
                   ethnicity.getOrElse(""),
                   ageAtLastVisit.getOrElse(""),
