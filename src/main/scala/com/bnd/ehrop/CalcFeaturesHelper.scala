@@ -145,9 +145,9 @@ trait CalcFeaturesHelper {
               val race = intValue(Table.person.race_concept_id)(els)
               val ethnicity = intValue(Table.person.ethnicity_concept_id)(els)
 
-              // val birthDate = dateMilisValue(Table.person.birth_datetime)(els)
-              val birthDate = yearOfBirth.map { year =>
-                AkkaFileSource.toCalendar(year, monthOfBirth.getOrElse(1), dayOfBirth.getOrElse(1), timeZone).getTime.getTime
+              val birthDate = yearOfBirth match {
+                case Some(year) => Some(AkkaFileSource.toCalendar(year, monthOfBirth.getOrElse(1), dayOfBirth.getOrElse(1), timeZone).getTime.getTime)
+                case None => dateMilisValue(Table.person.birth_datetime)(els)
               }
 
               val visitEndDate = visitDates.get(personId)
