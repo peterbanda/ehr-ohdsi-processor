@@ -45,34 +45,17 @@ trait CalcFeaturesHelper {
     val featureSpecsCount = featureSpecs.map(_.extractions.size).sum
 
     for {
-      // visit end dates per person
-      visitEndDates <- personIdMaxDate(
-        tableFile(visit_occurrence),
-        Table.visit_occurrence.visit_end_date.toString,
-        timeZone
-      ).map(_.toMap)
-
-      // visit start dates per person
-      visitStartDates <- personIdMaxDate(
+      // the last visit start dates per person
+      lastVisitDates <- personIdMaxDate(
         tableFile(visit_occurrence),
         Table.visit_occurrence.visit_start_date.toString,
         timeZone
       ).map(_.toMap)
 
-      personIds = (visitStartDates.keys ++ visitEndDates.keys).toSet
-      visitDates = personIds.flatMap { personId =>
-        (visitEndDates.get(personId) match {
-          case Some(date) => Some(date)
-          case None => visitStartDates.get(personId) // fall-back to start date
-        }).map { date =>
-          (personId, date)
-        }
-      }.toMap
-
       // calc death counts in 6 months and turn death counts into 'hasDied' flags
       deadIn6MonthsPersonIds <-
         if (hasDeathFile) {
-          val dateRangeIn6MonthsMap = dateIntervalsMilis(visitDates, 0, 180)
+          val dateRangeIn6MonthsMap = dateIntervalsMilis(lastVisitDates, 0, 180)
 
           personIdDateMilisCount(
             tableFile(death),
@@ -89,7 +72,7 @@ trait CalcFeaturesHelper {
       // calc features for different the periods
       featureResults <- {
         val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
-          val range = dateIntervalsMilis(visitDates, fromDaysShift, toDaysShift)
+          val range = dateIntervalsMilis(lastVisitDates, fromDaysShift, toDaysShift)
           (range, label)
         }
 
@@ -150,10 +133,10 @@ trait CalcFeaturesHelper {
                 case None => dateMilisValue(Table.person.birth_datetime)(els)
               }
 
-              val visitEndDate = visitDates.get(personId)
-              if (visitEndDate.isEmpty)
-                logger.warn(s"No end visit found for the person id ${personId}.")
-              val ageAtLastVisit = (visitEndDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
+              val lastVisitDate = lastVisitDates.get(personId)
+              if (lastVisitDate.isEmpty)
+                logger.warn(s"No last visit found for the person id ${personId}.")
+              val ageAtLastVisit = (lastVisitDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
                 (endDate.getTime - birthDate).toDouble / milisInYear
               }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
@@ -169,7 +152,7 @@ trait CalcFeaturesHelper {
                   ageAtLastVisit.getOrElse(""),
                   yearOfBirth.getOrElse(""),
                   monthOfBirth.getOrElse(""),
-                  visitEndDate.map(_.getTime).getOrElse("")
+                  lastVisitDate.map(_.getTime).getOrElse("")
                 ) ++ (
                   if (hasDeathFile) Seq(isDeadIn6Months) else Nil
                 ) ++ features

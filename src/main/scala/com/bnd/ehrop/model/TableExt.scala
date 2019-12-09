@@ -8,7 +8,7 @@ object TableExt {
     // person
     (Table.person, person.birth_datetime),
     // visit_occurrence
-    (Table.visit_occurrence, visit_occurrence.visit_end_date), // visit_end_datetime
+    (Table.visit_occurrence, visit_occurrence.visit_start_date), // visit_start_datetime
     // condition_occurrence
     (Table.condition_occurrence, condition_occurrence.condition_start_date), // condition_end_datetime
     // observation_period
