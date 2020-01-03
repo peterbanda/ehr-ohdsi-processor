@@ -12,7 +12,7 @@ import akka.util.ByteString
 import com.typesafe.scalalogging.Logger
 import org.apache.commons.io.IOUtils
 
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 
 object AkkaFileSource {
 
@@ -60,6 +60,7 @@ object AkkaFileSource {
   def csvAsStringSourceWithTransformAndHeader(
     fileName: String,
     withHeaderTrans: Array[String] => Array[String] => String,
+    newHeader: Array[String] => Array[String] = identity,
     delimiter: String = ",",
     eol: String = "\n",
     allowTruncation: Boolean = true
@@ -76,52 +77,39 @@ object AkkaFileSource {
         processEls(els)
       }
 
-      Source(first).concat(processed)
+      val newHeaderString = newHeader(header).mkString(delimiter)
+      Source(List(newHeaderString)).concat(processed)
     }
   }
-
-  private def indexColumnSafe(
-    columnName: String,
-    columnIndexMap: Map[String, Int],
-    inputPath: String
-  ) =
-    columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found"))
-
-  def intCsvSource(
-    inputPath: String,
-    columnName: String
-  ): Source[Int, _] =
-    csvAsSourceWithTransform(inputPath,
-      header => {
-        val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = indexColumnSafe(columnName, columnIndexMap, inputPath)
-
-        def int(els: Array[String]) = els(intColumnIndex).trim
-
-        els => int(els).toDouble.toInt
-      }
-    )
 
   def ehrDataCsvSource(
     inputPath: String,
     idColumnName: String,
     dateColumnName: String,
     dataIntColumnNames: Seq[String],
+    dateStoredAsMilis: Boolean = false,
     timeZone: TimeZone = defaultTimeZone
   ): Source[(Int, Option[Long], Seq[Option[Int]]), _] =
     csvAsSourceWithTransform(inputPath,
       header => {
+        // column indeces for a quick lookup
         val columnIndexMap = header.zipWithIndex.toMap
         val idColumnIndex = indexColumnSafe(idColumnName, columnIndexMap, inputPath)
         val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
         val dataColumnIndeces = dataIntColumnNames.map(indexColumnSafe(_, columnIndexMap, inputPath))
 
-        def asInt(string: String) = string.toDouble.toInt
-        def asIntOptional(string: String) = if (string.nonEmpty) Some(asInt(string)) else None
+        // aux functions to get values of the columns
+        def id(els: Array[String]) =
+          asInt(els(idColumnIndex).trim)
 
-        def id(els: Array[String]) = asInt(els(idColumnIndex).trim)
-        def date(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
-        def intData(els: Array[String]) = dataColumnIndeces.map(index => asIntOptional(els(index).trim))
+        def date(els: Array[String]) =
+          if (dateStoredAsMilis)
+            asLongOptional(els(dateColumnIndex).trim)
+         else
+            asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
+
+        def intData(els: Array[String]) =
+          dataColumnIndeces.map(index => asIntOptional(els(index).trim))
 
         els =>
           try {
@@ -185,6 +173,47 @@ object AkkaFileSource {
           }
       }
     )
+
+  // with header
+  def milisDateEhrDataStringCsvSource(
+    inputPath: String,
+    idColumnName: String,
+    dateColumnName: String,
+    dataIntColumnNames: Seq[String],
+    timeZone: TimeZone
+  ) =
+    AkkaFileSource.csvAsStringSourceWithTransformAndHeader(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+        val idColumnIndex = indexColumnSafe(idColumnName, columnIndexMap, inputPath)
+        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
+        val dataColumnIndeces = dataIntColumnNames.map(indexColumnSafe(_, columnIndexMap, inputPath))
+
+
+        def id(els: Array[String]) = els(idColumnIndex).trim
+        def dateMilis(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
+        def data(els: Array[String]) = dataColumnIndeces.map(index => els(index).trim)
+
+        els =>
+          try {
+            (Seq(dateMilis(els).getOrElse(""), id(els)) ++ data(els)).mkString(",")
+          } catch {
+            case e: Exception =>
+              logger.error(s"Error while processing an file with columns '${idColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              throw e;
+          }
+      },
+      newHeader = _ => (Seq(dateColumnName, idColumnName) ++ dataIntColumnNames).toArray
+    )
+
+  private def asInt(string: String) =
+    string.toDouble.toInt
+
+  private def asIntOptional(string: String) =
+    if (string.nonEmpty) Some(asInt(string)) else None
+
+  private def asLongOptional(string: String) =
+    if (string.nonEmpty) Some(string.toLong) else None
 
   def asDateMilis(
     dateString: String,
@@ -270,4 +299,11 @@ object AkkaFileSource {
     finally
       target.close
   }
+
+  private def indexColumnSafe(
+    columnName: String,
+    columnIndexMap: Map[String, Int],
+    inputPath: String
+  ) =
+    columnIndexMap.get(columnName).getOrElse(throw new IllegalArgumentException(s"Column '${columnName}' in the file '${inputPath}' not found"))
 }

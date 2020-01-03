@@ -30,7 +30,7 @@ trait CalcFeaturesHelper {
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
-    val tableFile = TableFileName(inputRootPath)
+    def tableFile(table: Table) = table.path(inputRootPath)
 
     import Table._
 

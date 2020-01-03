@@ -143,4 +143,6 @@ trait AppExt {
 
     config.getString("timeZone.code")
   }
+
+  def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 }

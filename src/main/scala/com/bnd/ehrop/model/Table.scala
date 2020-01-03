@@ -68,7 +68,3 @@ object Table {
 
   val values: Seq[Table with Enumeration] = Seq(person, visit_occurrence, condition_occurrence, observation, observation_period, measurement, procedure_occurrence, drug_exposure, death)
 }
-
-case class TableFileName(rootPath: String) {
-  def apply(table: Table) = rootPath + table.fileName
-}

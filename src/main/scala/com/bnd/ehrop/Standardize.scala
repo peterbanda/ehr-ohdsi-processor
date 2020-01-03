@@ -29,8 +29,6 @@ trait Standardize extends AppExt {
       )
     }
 
-  def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
-
   def run(args: Array[String]) = {
     val inputFileNames = get("i", args).map(_.split(",", -1).toSeq)
 

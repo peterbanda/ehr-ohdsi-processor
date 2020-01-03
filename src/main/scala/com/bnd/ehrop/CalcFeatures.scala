@@ -29,8 +29,6 @@ trait CalcFeatures extends AppExt {
       logger.warn(s"The output file '-o=' not specified. Using the input path '${inputPath.get}' with 'features.csv' for the output.")
     }
 
-    def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
-
     CalcFeaturesService.calcAndExportFeatures(
       withBackslash(inputPath.get),
       tableFeatureSpecs,
