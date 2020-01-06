@@ -20,6 +20,8 @@ trait CalcFeaturesHelper {
   protected val logger = Logger(this.getClass.getSimpleName)
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
 
+  private val useMilis = false
+
   def calcAndExportFeatures(
     inputRootPath: String,
     featureSpecs: Seq[TableFeatures],
@@ -46,22 +48,24 @@ trait CalcFeaturesHelper {
 
     for {
       // the last visit start dates per person
-      lastVisitDates <- personIdMaxDate(
+      lastVisitMilisDates <- personIdMaxMilisDate(
         tableFile(visit_occurrence),
         Table.visit_occurrence.visit_start_date.toString,
+        useMilis,
         timeZone
       ).map(_.toMap)
 
       // calc death counts in 6 months and turn death counts into 'hasDied' flags
       deadIn6MonthsPersonIds <-
         if (hasDeathFile) {
-          val dateRangeIn6MonthsMap = dateIntervalsMilis(lastVisitDates, 0, 180)
+          val dateRangeIn6MonthsMap = dateIntervalsMilis(lastVisitMilisDates, 0, 180)
 
-          personIdDateMilisCount(
+          personIdMilisDateCount(
             tableFile(death),
             dateRangeIn6MonthsMap,
             Table.death.death_date.toString,
             "",
+            useMilis,
             timeZone
           ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
         } else {
@@ -72,7 +76,7 @@ trait CalcFeaturesHelper {
       // calc features for different the periods
       featureResults <- {
         val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
-          val range = dateIntervalsMilis(lastVisitDates, fromDaysShift, toDaysShift)
+          val range = dateIntervalsMilis(lastVisitMilisDates, fromDaysShift, toDaysShift)
           (range, label)
         }
 
@@ -81,6 +85,7 @@ trait CalcFeaturesHelper {
           dateIntervalsWithLabels,
           featureSpecs,
           conceptCategories,
+          useMilis,
           timeZone
         ).map { features =>
           logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dayIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished.")
@@ -133,11 +138,11 @@ trait CalcFeaturesHelper {
                 case None => dateMilisValue(Table.person.birth_datetime)(els)
               }
 
-              val lastVisitDate = lastVisitDates.get(personId)
-              if (lastVisitDate.isEmpty)
+              val lastVisitMilisDate = lastVisitMilisDates.get(personId)
+              if (lastVisitMilisDate.isEmpty)
                 logger.warn(s"No last visit found for the person id ${personId}.")
-              val ageAtLastVisit = (lastVisitDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
-                (endDate.getTime - birthDate).toDouble / milisInYear
+              val ageAtLastVisit = (lastVisitMilisDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
+                (endDate - birthDate).toDouble / milisInYear
               }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
@@ -152,7 +157,7 @@ trait CalcFeaturesHelper {
                   ageAtLastVisit.getOrElse(""),
                   yearOfBirth.getOrElse(""),
                   monthOfBirth.getOrElse(""),
-                  lastVisitDate.map(_.getTime).getOrElse("")
+                  lastVisitMilisDate.getOrElse("")
                 ) ++ (
                   if (hasDeathFile) Seq(isDeadIn6Months) else Nil
                 ) ++ features
@@ -195,6 +200,7 @@ trait CalcFeaturesHelper {
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
     tableFeatures: Seq[TableFeatures],
     conceptCategories: Seq[ConceptCategory],
+    dateStoredAsMilis: Boolean,
     timeZone: TimeZone = defaultTimeZone
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -229,11 +235,12 @@ trait CalcFeaturesHelper {
       (seqExecutors, input)
     }
 
-    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs, timeZone)
+    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs, dateStoredAsMilis, timeZone)
   }
 
   def calcCustomFeaturesMultiInputs[T](
     execsWithInputs: Seq[(Seq[SeqFeatureExecutors[T]], TableFeatureExecutorInputSpec)],
+    dateStoredAsMilis: Boolean,
     timeZone: TimeZone = defaultTimeZone)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[FeatureResults] = {
@@ -242,7 +249,7 @@ trait CalcFeaturesHelper {
     // run each in parallel
     for {
       rawResults <- Future.sequence(
-        execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs, timeZone)(input) }
+        execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs, dateStoredAsMilis, timeZone)(input) }
       )
     } yield {
       val flattenedResults = rawResults.flatten
@@ -255,6 +262,7 @@ trait CalcFeaturesHelper {
 
   private def calcCustomFeatures[T, OUT](
     executors: Seq[SeqFeatureExecutors[T]],
+    dateStoredAsMilis: Boolean,
     timeZone: TimeZone = defaultTimeZone)(
     input: TableFeatureExecutorInputSpec)(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -262,7 +270,7 @@ trait CalcFeaturesHelper {
     val start = new Date()
 
     // create a source
-    val ehrDataSource = AkkaFileSource.ehrDataCsvSource(input.filePath, input.idColumnName, input.dateColumnName, input.dataColumnNames, timeZone)
+    val ehrDataSource = AkkaFileSource.ehrDataCsvSource(input.filePath, input.idColumnName, input.dateColumnName, input.dataColumnNames, dateStoredAsMilis, timeZone)
     // zip the flows
     val zippedFlow = AkkaStreamUtil.zipNFlows(executors.map(_.flows))
 
@@ -301,18 +309,18 @@ trait CalcFeaturesHelper {
     }
 
   private def dateIntervalsMilis(
-    idDates: Map[Int, Date],
+    idDates: Map[Int, Long],
     startShiftDays: Int,
     endShiftDays: Int
   ): Map[Int, (Long, Long)] =
     idDates.map { case (personId, lastVisitDate) =>
 
       val startCalendar = Calendar.getInstance()
-      startCalendar.setTime(lastVisitDate)
+      startCalendar.setTimeInMillis(lastVisitDate)
       startCalendar.add(Calendar.DAY_OF_YEAR, startShiftDays)
 
       val endCalendar = Calendar.getInstance()
-      endCalendar.setTime(lastVisitDate)
+      endCalendar.setTimeInMillis(lastVisitDate)
       endCalendar.add(Calendar.DAY_OF_YEAR, endShiftDays)
 
       (personId, (startCalendar.getTime.getTime, endCalendar.getTime.getTime))
@@ -354,34 +362,36 @@ trait CalcFeaturesHelper {
     (columnNames, personResults)
   }
 
-  private def personIdMaxDate(
+  private def personIdMaxMilisDate(
     inputPath: String,
     dateColumnName: String,
+    dateStoredAsMilis: Boolean,
     timeZone: TimeZone,
     personColumnName: String = Table.person.person_id.toString)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     val start = new Date()
-    val personIdDateSource = AkkaFileSource.intDateCsvSource(inputPath, personColumnName, dateColumnName, timeZone)
+    val personIdDateSource = AkkaFileSource.idMilisDateCsvSource(inputPath, personColumnName, dateColumnName, dateStoredAsMilis, timeZone)
 
-    personIdDateSource.collect { case Some(x) => x }.via(AkkaFlow.max[Date]).runWith(Sink.head).map { maxDates =>
+    personIdDateSource.collect { case Some(x) => x }.via(AkkaFlow.max[Long]).runWith(Sink.head).map { maxDates =>
       logger.info(s"Max person-id date for '${inputPath}' and column '${personColumnName}' done in ${new Date().getTime - start.getTime} ms.")
       logger.info(s"Total dates: ${maxDates.keySet.size}")
       maxDates
     }
   }
 
-  private def personIdDateMilisCount(
+  private def personIdMilisDateCount(
     inputPath: String,
     idFromToDatesMap: Map[Int, (Long, Long)],
     dateColumnName: String,
     outputColumnName: String,
+    dateStoredAsMilis: Boolean,
     timeZone: TimeZone,
     personColumnName: String = Table.person.person_id.toString)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     val start = new Date()
-    val personIdDateSource = AkkaFileSource.intMilisDateCsvSource(inputPath, personColumnName, dateColumnName, timeZone)
+    val personIdDateSource = AkkaFileSource.idMilisDateCsvSource(inputPath, personColumnName, dateColumnName, dateStoredAsMilis, timeZone)
 
     personIdDateSource.collect { case Some(x) => x }.via(AkkaFlow.count1X(idFromToDatesMap)).runWith(Sink.head).map { counts =>
       logger.info(s"Person id count for '${inputPath}' filtered between dates done in ${new Date().getTime - start.getTime} ms.")

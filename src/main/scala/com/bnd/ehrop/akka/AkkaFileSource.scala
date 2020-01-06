@@ -98,77 +98,54 @@ object AkkaFileSource {
         val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
         val dataColumnIndeces = dataIntColumnNames.map(indexColumnSafe(_, columnIndexMap, inputPath))
 
-        // aux functions to get values of the columns
+        // aux functions to get values for the columns
         def id(els: Array[String]) =
-          asInt(els(idColumnIndex).trim)
+          asInt(els, idColumnIndex)
 
         def date(els: Array[String]) =
-          if (dateStoredAsMilis)
-            asLongOptional(els(dateColumnIndex).trim)
-         else
-            asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
+          asDateMilis(els, dateColumnIndex, inputPath, timeZone, dateStoredAsMilis)
 
         def intData(els: Array[String]) =
-          dataColumnIndeces.map(index => asIntOptional(els(index).trim))
+          dataColumnIndeces.map(index => asIntOptional(els, index))
 
         els =>
           try {
             (id(els), date(els), intData(els))
           } catch {
             case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${idColumnName}', '${dateColumnName}', '${dateColumnName.mkString(", ")}' at the path '${inputPath}'.", e)
+              logger.error(s"Error while processing an file with the columns '${idColumnName}', '${dateColumnName}', '${dateColumnName.mkString(", ")}' at the path '${inputPath}'.", e)
               throw e;
           }
       }
     )
 
-  def intDateCsvSource(
+  def idMilisDateCsvSource(
     inputPath: String,
-    intColumnName: String,
+    idColumnName: String,
     dateColumnName: String,
-    timeZone: TimeZone = defaultTimeZone
-  ): Source[Option[(Int, Date)], _] =
-    csvAsSourceWithTransform(inputPath,
-      header => {
-        val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
-        val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
-
-        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
-        def dateSafe(els: Array[String]): Option[Date] = asDate(els(dateColumnIndex).trim, inputPath, timeZone)
-
-        els =>
-          try {
-            dateSafe(els).map((int(els), _))
-          } catch {
-            case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
-              throw e
-          }
-      }
-    )
-
-  def intMilisDateCsvSource(
-    inputPath: String,
-    intColumnName: String,
-    dateColumnName: String,
+    dateStoredAsMilis: Boolean = false,
     timeZone: TimeZone = defaultTimeZone
   ): Source[Option[(Int, Long)], _] =
     csvAsSourceWithTransform(inputPath,
       header => {
+        // column indeces for a quick lookup
         val columnIndexMap = header.zipWithIndex.toMap
-        val intColumnIndex = indexColumnSafe(intColumnName, columnIndexMap, inputPath)
+        val idColumnIndex = indexColumnSafe(idColumnName, columnIndexMap, inputPath)
         val dateColumnIndex = indexColumnSafe(dateColumnName, columnIndexMap, inputPath)
 
-        def int(els: Array[String]) = els(intColumnIndex).trim.toDouble.toInt
-        def dateSafe(els: Array[String]): Option[Long] = asDateMilis(els(dateColumnIndex).trim, inputPath, timeZone)
+        // aux functions to get values for the columns
+        def id(els: Array[String]) =
+          asInt(els, idColumnIndex)
+
+        def date(els: Array[String]) =
+          asDateMilis(els, dateColumnIndex, inputPath, timeZone, dateStoredAsMilis)
 
         els =>
           try {
-            dateSafe(els).map((int(els), _))
+            date(els).map((id(els), _))
           } catch {
             case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${intColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              logger.error(s"Error while processing an file with the columns '${idColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
               throw e;
           }
       }
@@ -199,27 +176,43 @@ object AkkaFileSource {
             (Seq(dateMilis(els).getOrElse(""), id(els)) ++ data(els)).mkString(",")
           } catch {
             case e: Exception =>
-              logger.error(s"Error while processing an file with columns '${idColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
+              logger.error(s"Error while processing an file with the columns '${idColumnName}' and '${dateColumnName}' at the path '${inputPath}'.", e)
               throw e;
           }
       },
       newHeader = _ => (Seq(dateColumnName, idColumnName) ++ dataIntColumnNames).toArray
     )
 
-  private def asInt(string: String) =
-    string.toDouble.toInt
+  private def asInt(els: Array[String], index: Int) =
+    els(index).trim.toDouble.toInt
 
-  private def asIntOptional(string: String) =
-    if (string.nonEmpty) Some(asInt(string)) else None
+  private def asIntOptional(els: Array[String], index: Int) = {
+    val string = els(index).trim
+    if (string.nonEmpty) Some(string.toDouble.toInt) else None
+  }
 
   private def asLongOptional(string: String) =
     if (string.nonEmpty) Some(string.toLong) else None
 
   def asDateMilis(
+    els: Array[String],
+    index: Int,
+    inputPath: String,
+    timeZone: TimeZone,
+    dateStoredAsMilis: Boolean): Option[Long] = {
+    val string = els(index).trim
+
+    if (dateStoredAsMilis)
+      asLongOptional(string)
+    else
+      asDateMilis(string, inputPath, timeZone)
+  }
+
+  def asDateMilis(
     dateString: String,
     inputPath: String,
     timeZone: TimeZone = defaultTimeZone
-  ) =
+  ): Option[Long] =
     asCalendar(dateString, inputPath, timeZone).map(_.getTimeInMillis)
 
   def asDate(
