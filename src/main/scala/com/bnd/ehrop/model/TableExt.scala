@@ -27,5 +27,7 @@ object TableExt {
     def dateColumn: table.Col = tableDateColumnMap.get(table).get.asInstanceOf[table.Col]
 
     def path(rootPath: String) = rootPath + table.fileName
+
+    def sortPath(rootPath: String) = rootPath + "sorted-" + table.fileName
   }
 }

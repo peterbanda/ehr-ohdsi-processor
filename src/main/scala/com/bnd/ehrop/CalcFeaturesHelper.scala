@@ -1,5 +1,6 @@
 package com.bnd.ehrop
 
+import java.io.File
 import java.util.{Calendar, Date, TimeZone}
 
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
@@ -7,10 +8,12 @@ import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, defaultTimeZ
 import com.bnd.ehrop.model._
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
+import sys.process._
 import FeatureCalcTypes._
 import com.bnd.ehrop.model.TableExt._
 import com.typesafe.scalalogging.Logger
 import AkkaFileSource.defaultTimeZone
+import org.apache.commons.io.FileUtils
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -20,19 +23,19 @@ trait CalcFeaturesHelper {
   protected val logger = Logger(this.getClass.getSimpleName)
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
 
-  private val useMilis = false
-
   def calcAndExportFeatures(
     inputRootPath: String,
     featureSpecs: Seq[TableFeatures],
     dayIntervals: Seq[DayInterval],
     conceptCategories: Seq[ConceptCategory],
     timeZone: TimeZone,
+    withDateSort: Boolean = false,
     outputFileName: Option[String] = None,
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     def tableFile(table: Table) = table.path(inputRootPath)
+    def tableFileSorted(table: Table) = table.sortPath(inputRootPath)
 
     import Table._
 
@@ -47,11 +50,14 @@ trait CalcFeaturesHelper {
     val featureSpecsCount = featureSpecs.map(_.extractions.size).sum
 
     for {
+      // sort if needed
+      _ <- if (withDateSort) sortByDateForTableFeatures(inputRootPath, featureSpecs, timeZone) else Future(())
+
       // the last visit start dates per person
       lastVisitMilisDates <- personIdMaxMilisDate(
-        tableFile(visit_occurrence),
+        if (withDateSort) tableFileSorted(visit_occurrence) else tableFile(visit_occurrence),
         Table.visit_occurrence.visit_start_date.toString,
-        useMilis,
+        withDateSort,
         timeZone
       ).map(_.toMap)
 
@@ -65,7 +71,7 @@ trait CalcFeaturesHelper {
             dateRangeIn6MonthsMap,
             Table.death.death_date.toString,
             "",
-            useMilis,
+            false,
             timeZone
           ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
         } else {
@@ -85,7 +91,7 @@ trait CalcFeaturesHelper {
           dateIntervalsWithLabels,
           featureSpecs,
           conceptCategories,
-          useMilis,
+          withDateSort,
           timeZone
         ).map { features =>
           logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dayIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished.")
@@ -200,7 +206,7 @@ trait CalcFeaturesHelper {
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
     tableFeatures: Seq[TableFeatures],
     conceptCategories: Seq[ConceptCategory],
-    dateStoredAsMilis: Boolean,
+    withDateSort: Boolean,
     timeZone: TimeZone = defaultTimeZone
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -225,9 +231,12 @@ trait CalcFeaturesHelper {
         SeqFeatureExecutors(seqFlow, newExtras)
       }
 
+      // if a sorted file is to be used get its appropriate path
+      val path = if (withDateSort) table.sortPath(rootPath) else table.path(rootPath)
+
       // input spec
       val input = TableFeatureExecutorInputSpec(
-        table.path(rootPath),
+        path,
         table.dateColumn.toString,
         dataColumns
       )
@@ -235,7 +244,7 @@ trait CalcFeaturesHelper {
       (seqExecutors, input)
     }
 
-    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs, dateStoredAsMilis, timeZone)
+    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs, withDateSort, timeZone)
   }
 
   def calcCustomFeaturesMultiInputs[T](
@@ -397,6 +406,53 @@ trait CalcFeaturesHelper {
       logger.info(s"Person id count for '${inputPath}' filtered between dates done in ${new Date().getTime - start.getTime} ms.")
       logger.info(s"Total counts: ${counts.map(_._2).sum}")
       (outputColumnName, counts)
+    }
+  }
+
+  def sortByDateForTableFeatures(
+    inputPath: String,
+    tableFeatures: Seq[TableFeatures],
+    timeZone: TimeZone = defaultTimeZone,
+    personColumnName: String = Table.person.person_id.toString)(
+    implicit materializer: Materializer, executionContext: ExecutionContext
+  ) =
+    Future.sequence(
+      tableFeatures.map { tableFeatures =>
+        val extraColumns = tableFeatures.extractions.flatMap(_.columns.map(_.toString)).toSet.toSeq
+        val table = tableFeatures.table
+        sortByDate(inputPath, table, extraColumns, timeZone, personColumnName)
+      }
+    )
+
+  private def sortByDate(
+    inputPath: String,
+    table: Table,
+    dataColumnNames: Seq[String] = Nil,
+    timeZone: TimeZone = defaultTimeZone,
+    personColumnName: String = Table.person.person_id.toString)(
+    implicit materializer: Materializer, executionContext: ExecutionContext
+  ) = {
+    val inputFileName = inputPath + table.fileName
+    val coreFileName = inputPath + "core-" + table.fileName
+    val sortedFileName = inputPath + "sorted-" + table.fileName
+    logger.info(s"Sorting of '${inputFileName}' by date started.")
+
+    val start = new Date()
+
+    val lineSource = AkkaFileSource.milisDateEhrDataStringCsvSource(inputFileName, personColumnName, table.dateColumn.toString, dataColumnNames, timeZone)
+    AkkaFileSource.writeLines(lineSource, coreFileName).map { _ =>
+      logger.info(s"Export of a core data file from '${inputFileName}' finished in ${new Date().getTime - start.getTime} ms.")
+
+      // sort
+      logger.info(s"Sorting the core data file '${coreFileName}' by date...")
+      val sortingStart = new Date()
+      (s"head -n 1 ${coreFileName}" #> new File(sortedFileName)).!
+      (s"tail -n +2 ${coreFileName}" #| s"sort -t, -n -k1" #>> new File(sortedFileName)).!
+      //      (s"sort -t, -n -k1 ${coreFileName}" #>> new File(sortedFileName)).!
+      logger.info(s"Sorting of the core data file '${coreFileName}' by date finished in ${new Date().getTime - sortingStart.getTime} ms.")
+
+      // delete a temp file
+      FileUtils.deleteQuietly(new File(coreFileName))
     }
   }
 }

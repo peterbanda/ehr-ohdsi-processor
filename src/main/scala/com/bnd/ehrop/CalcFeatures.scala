@@ -29,12 +29,21 @@ trait CalcFeatures extends AppExt {
       logger.warn(s"The output file '-o=' not specified. Using the input path '${inputPath.get}' with 'features.csv' for the output.")
     }
 
+    // check if the input tables/files should be sorted by date
+    val withDateSort = get("datesort", args).map(_ => true).getOrElse(false)
+
+    if (withDateSort) {
+      val message = "The flag 'datesort' detected. Will be sorting the input files by date."
+      logger.info(message)
+    }
+
     CalcFeaturesService.calcAndExportFeatures(
       withBackslash(inputPath.get),
       tableFeatureSpecs,
       dateIntervals,
       conceptCategories,
       TimeZone.getTimeZone(timeZoneCode),
+      withDateSort,
       outputFileName
     ) recover {
       case e: Exception =>
