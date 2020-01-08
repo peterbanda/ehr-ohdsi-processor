@@ -25,9 +25,14 @@ trait CalcFeatures extends AppExt {
     // check if the input path exists
     fileExistsOrError(inputPath.get)
 
+    val inputRootPath = withBackslash(inputPath.get)
+
+    // check if the output file name is defined
     if (outputFileName.isEmpty) {
       logger.warn(s"The output file '-o=' not specified. Using the input path '${inputPath.get}' with 'features.csv' for the output.")
     }
+
+    val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
 
     // check if the input tables/files should be sorted by date and time-lag-based features should be calculated
     val withTimeLags = get("with_time_lags", args).map(_ => true).getOrElse(false)
@@ -44,7 +49,7 @@ trait CalcFeatures extends AppExt {
       conceptCategories,
       TimeZone.getTimeZone(timeZoneCode),
       withTimeLags,
-      outputFileName
+      outputFile
     ) recover {
       case e: Exception =>
         logger.error(s"Error occurred: ${e.getMessage}. Exiting.")

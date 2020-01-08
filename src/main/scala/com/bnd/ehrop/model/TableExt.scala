@@ -1,8 +1,9 @@
 package com.bnd.ehrop.model
 
+import com.bnd.ehrop.BasicHelper
 import com.bnd.ehrop.model.Table._
 
-object TableExt {
+object TableExt extends BasicHelper {
 
   private val tableDateColumnMap: Map[Table, Enumeration#Value] = Seq(
     // person
@@ -26,8 +27,8 @@ object TableExt {
   implicit class Infix(val table: Table) {
     def dateColumn: table.Col = tableDateColumnMap.get(table).get.asInstanceOf[table.Col]
 
-    def path(rootPath: String) = rootPath + table.fileName
+    def path(rootPath: String) = withBackslash(rootPath) + table.fileName
 
-    def sortPath(rootPath: String) = rootPath + "sorted-" + table.fileName
+    def sortPath(rootPath: String) = withBackslash(rootPath) + "sorted-" + table.fileName
   }
 }

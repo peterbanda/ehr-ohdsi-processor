@@ -1,6 +1,7 @@
 package com.bnd.ehrop
 
 import java.util
+import java.util.TimeZone
 
 import com.bnd.ehrop.model._
 import com.typesafe.config.ConfigFactory
@@ -8,10 +9,8 @@ import com.typesafe.scalalogging.Logger
 
 import scala.collection.JavaConversions._
 
-trait AppExt {
+trait AppExt extends BasicHelper {
 
-  // logger
-  protected val logger = Logger(this.getClass.getSimpleName)
   protected val config = ConfigFactory.load()
 
   protected def fileExists(name: String) =
@@ -143,6 +142,12 @@ trait AppExt {
 
     config.getString("timeZone.code")
   }
+}
+
+trait BasicHelper {
+
+  protected val logger = Logger(this.getClass.getSimpleName)
+  protected val defaultTimeZone = TimeZone.getTimeZone("CET") // CEST
 
   def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
 }

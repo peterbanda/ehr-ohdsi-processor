@@ -1,10 +1,9 @@
 package com.bnd.ehrop
 
-import java.io.File
 import java.util.{Calendar, Date, TimeZone}
 
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
-import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, defaultTimeZone}
+import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform}
 import com.bnd.ehrop.model._
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
@@ -12,17 +11,15 @@ import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
 import sys.process._
 import FeatureCalcTypes._
 import com.bnd.ehrop.model.TableExt._
-import com.typesafe.scalalogging.Logger
-import AkkaFileSource.defaultTimeZone
 import org.apache.commons.io.FileUtils
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
-trait CalcFeaturesHelper {
+import java.io.File
 
-  // logger
-  protected val logger = Logger(this.getClass.getSimpleName)
+trait CalcFeaturesHelper extends BasicHelper {
+
   private val milisInYear: Long = 365.toLong * 24 * 60 * 60 * 1000
 
   def calcAndExportFeatures(
@@ -32,12 +29,14 @@ trait CalcFeaturesHelper {
     conceptCategories: Seq[ConceptCategory],
     timeZone: TimeZone,
     withTimeLags: Boolean = false,
-    outputFileName: Option[String] = None,
+    outputFileName: String
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
+    val outputRootPath = withBackslash(new File(outputFileName).getParent)
+
     def tableFile(table: Table) = table.path(inputRootPath)
-    def tableFileSorted(table: Table) = table.sortPath(inputRootPath)
+    def tableFileSorted(table: Table) = table.sortPath(outputRootPath)
 
     import Table._
 
@@ -53,7 +52,7 @@ trait CalcFeaturesHelper {
 
     for {
       // sort if needed
-      _ <- if (withTimeLags) sortByDateForTableFeatures(inputRootPath, featureSpecs, timeZone) else Future(())
+      _ <- if (withTimeLags) sortByDateForTableFeatures(inputRootPath, outputRootPath, featureSpecs, timeZone) else Future(())
 
       // the last visit start dates per person
       lastVisitMilisDates <- personIdMaxMilisDate(
@@ -89,7 +88,7 @@ trait CalcFeaturesHelper {
         }
 
         calcFeatures(
-          inputRootPath,
+          if (withTimeLags) outputRootPath else inputRootPath,
           dateIntervalsWithLabels,
           featureSpecs,
           conceptCategories,
@@ -195,9 +194,8 @@ trait CalcFeaturesHelper {
             ) ++ featureResults.columnNames
         ).mkString(",")
 
-        val outputFile = outputFileName.getOrElse(inputRootPath + "features.csv")
-        logger.info(s"Exporting results to '${outputFile}.")
-        AkkaFileSource.writeLines(Source(List(header)).concat(personOutputSource), outputFile)
+        logger.info(s"Exporting results to '${outputFileName}.")
+        AkkaFileSource.writeLines(Source(List(header)).concat(personOutputSource), outputFileName)
       }
     } yield
       System.exit(0)
@@ -425,6 +423,7 @@ trait CalcFeaturesHelper {
 
   def sortByDateForTableFeatures(
     inputPath: String,
+    outputPath: String,
     tableFeatures: Seq[TableFeatures],
     timeZone: TimeZone = defaultTimeZone,
     personColumnName: String = Table.person.person_id.toString)(
@@ -434,12 +433,13 @@ trait CalcFeaturesHelper {
       tableFeatures.map { tableFeatures =>
         val extraColumns = tableFeatures.extractions.flatMap(_.inputColumns.map(_.toString)).toSet.toSeq
         val table = tableFeatures.table
-        sortByDate(inputPath, table, extraColumns, timeZone, personColumnName)
+        sortByDate(inputPath, outputPath, table, extraColumns, timeZone, personColumnName)
       }
     )
 
   private def sortByDate(
     inputPath: String,
+    outputPath: String,
     table: Table,
     dataColumnNames: Seq[String] = Nil,
     timeZone: TimeZone = defaultTimeZone,
@@ -447,8 +447,8 @@ trait CalcFeaturesHelper {
     implicit materializer: Materializer, executionContext: ExecutionContext
   ) = {
     val inputFileName = inputPath + table.fileName
-    val coreFileName = inputPath + "core-" + table.fileName
-    val sortedFileName = inputPath + "sorted-" + table.fileName
+    val coreFileName = outputPath + "core-" + table.fileName
+    val sortedFileName = outputPath + "sorted-" + table.fileName
     logger.info(s"Sorting of '${inputFileName}' by date started.")
 
     val start = new Date()

@@ -9,16 +9,13 @@ import java.util.{Calendar, Date, TimeZone}
 import akka.stream.{IOResult, Materializer}
 import akka.stream.scaladsl.{FileIO, Framing, Source}
 import akka.util.ByteString
+import com.bnd.ehrop.BasicHelper
 import com.typesafe.scalalogging.Logger
 import org.apache.commons.io.IOUtils
 
 import scala.concurrent.{ExecutionContext, Future}
 
-object AkkaFileSource {
-
-  // logger
-  protected val logger = Logger(this.getClass.getSimpleName)
-  val defaultTimeZone = TimeZone.getTimeZone("CET") // CEST
+object AkkaFileSource extends BasicHelper {
 
   def csvAsSource(
     fileName: String,
