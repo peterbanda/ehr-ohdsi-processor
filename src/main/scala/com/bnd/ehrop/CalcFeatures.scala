@@ -29,11 +29,11 @@ trait CalcFeatures extends AppExt {
       logger.warn(s"The output file '-o=' not specified. Using the input path '${inputPath.get}' with 'features.csv' for the output.")
     }
 
-    // check if the input tables/files should be sorted by date
-    val withDateSort = get("datesort", args).map(_ => true).getOrElse(false)
+    // check if the input tables/files should be sorted by date and time-lag-based features should be calculated
+    val withTimeLags = get("with_time_lags", args).map(_ => true).getOrElse(false)
 
-    if (withDateSort) {
-      val message = "The flag 'datesort' detected. Will be sorting the input files by date."
+    if (withTimeLags) {
+      val message = "The flag 'with_time_lags' detected. Will be generating the time-lag-based features (and sorting input files by date)."
       logger.info(message)
     }
 
@@ -43,7 +43,7 @@ trait CalcFeatures extends AppExt {
       dateIntervals,
       conceptCategories,
       TimeZone.getTimeZone(timeZoneCode),
-      withDateSort,
+      withTimeLags,
       outputFileName
     ) recover {
       case e: Exception =>

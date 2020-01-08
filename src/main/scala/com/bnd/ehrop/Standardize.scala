@@ -5,7 +5,8 @@ import java.util.Date
 import _root_.akka.actor.ActorSystem
 import _root_.akka.stream.{ActorMaterializer, Materializer}
 import _root_.akka.stream.scaladsl.{Sink, Source}
-import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, StatsAccum}
+import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, BasicStatsAccum}
+import com.bnd.ehrop.model.{OutputColumn, TimeLagStats}
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -18,16 +19,6 @@ trait Standardize extends AppExt {
   private val basicNumColNames = Seq(
     "age_at_last_visit", "year_of_birth", "month_of_birth", "visit_end_date"
   )
-
-  private val derivedNumColumnNames =
-    tableFeatureSpecs.flatMap { tableFeatures =>
-      val tableName = tableFeatures.table.name
-      dateIntervals.flatMap( dateInterval =>
-        tableFeatures.extractions.flatMap( feature =>
-          if (feature.isNumeric) Some(tableName + "_" + feature.label + "_" + dateInterval.label) else None
-        )
-      )
-    }
 
   def run(args: Array[String]) = {
     val inputFileNames = get("i", args).map(_.split(",", -1).toSeq)
@@ -61,6 +52,33 @@ trait Standardize extends AppExt {
       val message = "The input stats (means and stds) passed via 'istats'."
       logger.info(message)
     }
+
+    // check if the input tables/files should be sorted by date and time-lag-based features should be calculated
+    val withTimeLags = get("with_time_lags", args).map(_ => true).getOrElse(false)
+
+    if (withTimeLags) {
+      val message = "The flag 'with_time_lags' detected. Will be standardizing the time-lag feature columns as well."
+      logger.info(message)
+    }
+
+    val derivedNumColumnNames =
+      tableFeatureSpecs.flatMap { tableFeatures =>
+        val tableName = tableFeatures.table.name
+        val standardFeatures = dateIntervals.flatMap(dateInterval =>
+          tableFeatures.extractions.flatMap(feature =>
+            feature.outputColumns.flatMap { case OutputColumn(columnName, isNumeric) =>
+              if (isNumeric) Some(tableName + "_" + columnName + "_" + dateInterval.label) else None
+            }
+          )
+        )
+
+        val timeLagFeatures =
+          TimeLagStats().outputColumns.flatMap { case OutputColumn(columnName, isNumeric) =>
+            if (isNumeric) Some(tableName + "_" + columnName) else None
+          }
+
+        standardFeatures ++ (if (withTimeLags) timeLagFeatures else Nil)
+      }
 
     {
       for {
@@ -155,8 +173,8 @@ trait Standardize extends AppExt {
     ).map { multiStats =>
       multiStats.transpose.zip(columnNames).map { case (stats, columnName) =>
         // merge stats
-        val mergedStats = stats.fold(StatsAccum(0, 0, 0)) { case (total, accum) =>
-          StatsAccum(
+        val mergedStats = stats.fold(BasicStatsAccum(0, 0, 0)) { case (total, accum) =>
+          BasicStatsAccum(
             total.sum + accum.sum,
             total.sqSum + accum.sqSum,
             total.count + accum.count
@@ -175,7 +193,7 @@ trait Standardize extends AppExt {
     val start = new Date()
     val doubleSource = doubleCsvSource(inputPath, columnNames)
 
-    doubleSource.via(AkkaFlow.calcBasicStats(columnNames.size)).runWith(Sink.head).map { stats =>
+    doubleSource.via(AkkaFlow.calcMultiBasicStats(columnNames.size)).runWith(Sink.head).map { stats =>
       logger.info(s"Basic stats for '${inputPath}' and ${columnNames.size} columns calculated in ${new Date().getTime - start.getTime} ms.")
       stats
     }

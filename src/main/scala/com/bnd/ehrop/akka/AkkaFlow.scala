@@ -272,15 +272,15 @@ object AkkaFlow {
       }
     }
 
-  def calcBasicStats(size: Int) =
-    Flow[Seq[Option[Double]]].fold[Seq[StatsAccum]](
-      Seq.fill(size)(StatsAccum(0, 0, 0))
+  def calcMultiBasicStats(size: Int) =
+    Flow[Seq[Option[Double]]].fold[Seq[BasicStatsAccum]](
+      Seq.fill(size)(BasicStatsAccum(0, 0, 0))
     ) {
       case (accums, values) =>
         accums.zip(values).map { case (accum, value) =>
           value match {
             case Some(value) =>
-              StatsAccum(
+              BasicStatsAccum(
                 accum.sum + value,
                 accum.sqSum + value * value,
                 accum.count + 1
@@ -291,7 +291,37 @@ object AkkaFlow {
         }
     }
 
-  def calcMeanStd(accum: StatsAccum): Option[(Double, Double)] =
+  def diffs =
+    Flow[Double].sliding(2).map { els => els(1) - els(0) }
+
+  def calcDiffStats: Flow[(Int, Double), mutable.Map[Int, DiffStatsAccum], NotUsed] =
+    Flow[(Int, Double)].fold[mutable.Map[Int, DiffStatsAccum]](
+      mutable.Map[Int, DiffStatsAccum]()
+    ) {
+      case (map, (id, value)) =>
+        val accum = map.get(id).getOrElse(DiffStatsAccum(0, 0, 0, Double.MaxValue, Double.MinValue, None))
+
+        val newAccum = accum.prev match {
+          case Some(prev) =>
+            val diff: Double = value - prev
+            DiffStatsAccum(
+              accum.sum + diff,
+              accum.sqSum + diff * diff,
+              accum.count + 1,
+              Math.min(accum.min, diff),
+              Math.max(accum.max, diff),
+              Some(value)
+            )
+
+          case None =>
+            accum.copy(prev = Some(value))
+        }
+
+        map.update(id, newAccum)
+        map
+    }
+
+  def calcMeanStd(accum: BasicStatsAccum): Option[(Double, Double)] =
     if (accum.count > 0) {
       val mean = accum.sum / accum.count
       val variance = (accum.sqSum / accum.count) - mean * mean
@@ -300,10 +330,37 @@ object AkkaFlow {
       Some((mean, std))
     } else
       None
+
+  def calcFullStats(accum: DiffStatsAccum): Option[Stats] =
+    if (accum.count > 0) {
+      val mean = accum.sum / accum.count
+      val variance = (accum.sqSum / accum.count) - mean * mean
+      val std = Math.sqrt(variance)
+
+      Some(Stats(mean, variance, std, accum.min, accum.max))
+    } else
+      None
 }
 
-case class StatsAccum(
+case class BasicStatsAccum(
   sum: Double,
   sqSum: Double,
   count: Int
+)
+
+case class DiffStatsAccum(
+  sum: Double,
+  sqSum: Double,
+  count: Int,
+  min: Double,
+  max: Double,
+  prev: Option[Double]
+)
+
+case class Stats(
+  mean: Double,
+  variance: Double,
+  std: Double,
+  min: Double,
+  max: Double
 )

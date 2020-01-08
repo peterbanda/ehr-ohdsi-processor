@@ -1,45 +1,53 @@
 package com.bnd.ehrop.model
 
 trait FeatureExtraction[C] {
-  val label: String
-  val columns: Seq[C] = Nil
-  val isNumeric: Boolean
+  val inputColumns: Seq[C] = Nil
+  val outputColumns: Seq[OutputColumn]
 
   protected def asLowerCaseUnderscore(string: String) =
     string.replaceAll("[^\\p{Alnum}]", "_").toLowerCase
 }
 
+trait SingleOutFeatureExtraction[C] extends FeatureExtraction[C] {
+  val outputColumn: OutputColumn
+  lazy val outputColumns: Seq[OutputColumn] = Seq(outputColumn)
+}
+
+case class OutputColumn(
+  name: String,
+  isNumeric: Boolean
+)
+
 // Simple Counts
 
-case class Count[C]() extends FeatureExtraction[C] {
-  override val label = "count"
-  override val isNumeric = true
+case class Count[C]() extends SingleOutFeatureExtraction[C] {
+  override val outputColumn = OutputColumn("count", true)
 }
 
 case class DistinctCount[C](
   column: C
-) extends FeatureExtraction[C] {
-  override val label = column + "_distinct_count"
-  override val columns = Seq(column)
-  override val isNumeric = true
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(column)
+
+  override val outputColumn = OutputColumn(column + "_distinct_count", true)
 }
 
 case class Sum[C](
   column: C
-) extends FeatureExtraction[C] {
-  override val label = column + "_sum"
-  override val columns = Seq(column)
-  override val isNumeric = true
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(column)
+
+  override val outputColumn = OutputColumn(column + "_sum", true)
 }
 
 // Concept
 
 case class LastDefinedConcept[C](
   conceptColumn: C
-) extends FeatureExtraction[C] {
-  override val label = conceptColumn + "_last_defined"
-  override val columns = Seq(conceptColumn)
-  override val isNumeric = false
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(conceptColumn)
+
+  override val outputColumn = OutputColumn(conceptColumn + "_last_defined", false)
 }
 
 // Concept Category
@@ -47,28 +55,51 @@ case class LastDefinedConcept[C](
 case class ConceptCategoryExists[C](
   conceptColumn: C,
   categoryName: String
-) extends FeatureExtraction[C] {
-  override val label = conceptColumn + "_exists_" + asLowerCaseUnderscore(categoryName)
-  override val columns = Seq(conceptColumn)
-  override val isNumeric = false
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(conceptColumn)
+
+  override val outputColumn = OutputColumn(conceptColumn + "_exists_" + asLowerCaseUnderscore(categoryName), false)
 }
 
 case class ConceptCategoryCount[C](
   conceptColumn: C,
   categoryName: String
-) extends FeatureExtraction[C] {
-  override val label = conceptColumn + "_count_" + asLowerCaseUnderscore(categoryName)
-  override val columns = Seq(conceptColumn)
-  override val isNumeric = true
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(conceptColumn)
+
+  override val outputColumn = OutputColumn(conceptColumn + "_count_" + asLowerCaseUnderscore(categoryName), true)
 }
 
 case class ConceptCategoryIsLastDefined[C](
   conceptColumn: C,
   categoryName: String
-) extends FeatureExtraction[C] {
-  override val label = conceptColumn + "_last_defined_" + asLowerCaseUnderscore(categoryName)
-  override val columns = Seq(conceptColumn)
-  override val isNumeric = false
+) extends SingleOutFeatureExtraction[C] {
+  override val inputColumns = Seq(conceptColumn)
+
+  override val outputColumn = OutputColumn(conceptColumn + "_last_defined_" + asLowerCaseUnderscore(categoryName), false)
+}
+
+// Time lags
+
+case class TimeLagStats[C]() extends FeatureExtraction[C] {
+  private def col(suffix: String) =
+    suffix -> OutputColumn("time_lag_" + suffix, true)
+
+  private val suffixOutputColumns = Seq(
+    col("mean"),
+    col("std"),
+    col("min"),
+    col("max")
+  )
+
+  override val outputColumns = suffixOutputColumns.map(_._2)
+
+  private val suffixOutputColumnMap = suffixOutputColumns.toMap
+
+  def outputColumn(suffix: String) =
+    suffixOutputColumnMap.get(suffix).getOrElse(
+      throw new IllegalArgumentException(s"Output column suffix '${suffix}' does not exist for the time lags based features extraction.")
+    )
 }
 
 trait TableFeatures {

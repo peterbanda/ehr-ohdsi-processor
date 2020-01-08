@@ -8,6 +8,7 @@ import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform, defaultTimeZ
 import com.bnd.ehrop.model._
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
+
 import sys.process._
 import FeatureCalcTypes._
 import com.bnd.ehrop.model.TableExt._
@@ -15,6 +16,7 @@ import com.typesafe.scalalogging.Logger
 import AkkaFileSource.defaultTimeZone
 import org.apache.commons.io.FileUtils
 
+import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
 
 trait CalcFeaturesHelper {
@@ -29,7 +31,7 @@ trait CalcFeaturesHelper {
     dayIntervals: Seq[DayInterval],
     conceptCategories: Seq[ConceptCategory],
     timeZone: TimeZone,
-    withDateSort: Boolean = false,
+    withTimeLags: Boolean = false,
     outputFileName: Option[String] = None,
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -51,13 +53,13 @@ trait CalcFeaturesHelper {
 
     for {
       // sort if needed
-      _ <- if (withDateSort) sortByDateForTableFeatures(inputRootPath, featureSpecs, timeZone) else Future(())
+      _ <- if (withTimeLags) sortByDateForTableFeatures(inputRootPath, featureSpecs, timeZone) else Future(())
 
       // the last visit start dates per person
       lastVisitMilisDates <- personIdMaxMilisDate(
-        if (withDateSort) tableFileSorted(visit_occurrence) else tableFile(visit_occurrence),
+        if (withTimeLags) tableFileSorted(visit_occurrence) else tableFile(visit_occurrence),
         Table.visit_occurrence.visit_start_date.toString,
-        withDateSort,
+        withTimeLags,
         timeZone
       ).map(_.toMap)
 
@@ -91,7 +93,7 @@ trait CalcFeaturesHelper {
           dateIntervalsWithLabels,
           featureSpecs,
           conceptCategories,
-          withDateSort,
+          withTimeLags,
           timeZone
         ).map { features =>
           logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dayIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished.")
@@ -206,7 +208,7 @@ trait CalcFeaturesHelper {
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
     tableFeatures: Seq[TableFeatures],
     conceptCategories: Seq[ConceptCategory],
-    withDateSort: Boolean,
+    withTimeLags: Boolean,
     timeZone: TimeZone = defaultTimeZone
   )(
     implicit materializer: Materializer, executionContext: ExecutionContext
@@ -219,20 +221,32 @@ trait CalcFeaturesHelper {
     // for each table create input spec with seq executors
     val seqExecsWithInputs = tableFeatures.map(_.table).zip(executorsAndColumns).map { case (table, (executors, dataColumns)) =>
       // group flows based on date filtering and create seq-feature executors
-      val extras = executors.map(_.extra.asInstanceOf[FeatureExecutorExtra[Any]])
+      val outputSpecs = executors.map(_.outputSpecs.map(_.asInstanceOf[FeatureExecutorOutputSpec[Any, Any]]))
 
+      // for each date-range group group flows into a seq flow
       val seqExecutors = idDateRangesWithLabels.map { case (dateMap, rangeLabel) =>
         // zip the flows
         val flows = executors.map(_.flow().asInstanceOf[EHRFlow[Any]])
         val seqFlow = AkkaFlow.filterDate2[Seq[Option[Int]]](dateMap).collect { case Some(x) => x }.via(AkkaStreamUtil.zipNFlows(flows))
 
         // add date to output columns
-        val newExtras = extras.map(extra => extra.copy(outputColumnName = extra.outputColumnName + "_" + rangeLabel))
-        SeqFeatureExecutors(seqFlow, newExtras)
+        val newOutputSpecs = outputSpecs.map(_.map(spec => spec.copy(outputColumnName = spec.outputColumnName + "_" + rangeLabel)))
+        SeqFeatureExecutors(seqFlow, newOutputSpecs)
       }
 
+      // time lag executor(s)
+      val timeLagExecs =
+        if (withTimeLags) {
+          val timeLagExecutor = FeatureExecutorFactory[table.Col](table.name)(TimeLagStats())
+
+          val timeLagSeqFlow = AkkaStreamUtil.zipNFlows(Seq(timeLagExecutor.flow().asInstanceOf[EHRFlow[Any]]))
+          val timeLagOutputSpecs = timeLagExecutor.outputSpecs.map(_.asInstanceOf[FeatureExecutorOutputSpec[Any, Any]])
+          Seq(SeqFeatureExecutors(timeLagSeqFlow, Seq(timeLagOutputSpecs)))
+        } else
+          Nil
+
       // if a sorted file is to be used get its appropriate path
-      val path = if (withDateSort) table.sortPath(rootPath) else table.path(rootPath)
+      val path = if (withTimeLags) table.sortPath(rootPath) else table.path(rootPath)
 
       // input spec
       val input = TableFeatureExecutorInputSpec(
@@ -241,41 +255,41 @@ trait CalcFeaturesHelper {
         dataColumns
       )
 
-      (seqExecutors, input)
+      (seqExecutors ++ timeLagExecs, input)
     }
 
-    calcCustomFeaturesMultiInputs[Any](seqExecsWithInputs, withDateSort, timeZone)
+    calcCustomFeaturesMultiInputs(seqExecsWithInputs, withTimeLags, timeZone)
   }
 
-  def calcCustomFeaturesMultiInputs[T](
-    execsWithInputs: Seq[(Seq[SeqFeatureExecutors[T]], TableFeatureExecutorInputSpec)],
+  def calcCustomFeaturesMultiInputs(
+    execsWithInputs: Seq[(Seq[SeqFeatureExecutors[Any, Any]], TableFeatureExecutorInputSpec)],
     dateStoredAsMilis: Boolean,
     timeZone: TimeZone = defaultTimeZone)(
     implicit materializer: Materializer, executionContext: ExecutionContext
   ): Future[FeatureResults] = {
-    val undefinedValues = execsWithInputs.flatMap(_._1.flatMap(_.extras.map(_.undefinedValue)))
-
     // run each in parallel
     for {
       rawResults <- Future.sequence(
-        execsWithInputs.map { case (execs, input) => calcCustomFeatures[T, Int](execs, dateStoredAsMilis, timeZone)(input) }
+        execsWithInputs.map { case (execs, input) => calcCustomFeatures(execs, input, dateStoredAsMilis, timeZone) }
       )
     } yield {
       val flattenedResults = rawResults.flatten
       logger.info(s"Grouping ${flattenedResults.size} features/results.")
-      val (columnNames, results) = groupResults(flattenedResults, undefinedValues)
 
-      FeatureResults(columnNames, results, undefinedValues)
+      val outputSpecs = flattenedResults.map(_._1)
+      val (columnNames, results) = groupResults(outputSpecs, flattenedResults.map(_._2))
+
+      FeatureResults(columnNames, results, outputSpecs.map(_.undefinedValue))
     }
   }
 
   private def calcCustomFeatures[T, OUT](
-    executors: Seq[SeqFeatureExecutors[T]],
+    executors: Seq[SeqFeatureExecutors[T, OUT]],
+    input: TableFeatureExecutorInputSpec,
     dateStoredAsMilis: Boolean,
     timeZone: TimeZone = defaultTimeZone)(
-    input: TableFeatureExecutorInputSpec)(
     implicit materializer: Materializer, executionContext: ExecutionContext
-  ) = {
+  ): Future[Seq[(FeatureExecutorOutputSpec[T, OUT], mutable.Map[Int, OUT])]] = {
     val start = new Date()
 
     // create a source
@@ -284,25 +298,25 @@ trait CalcFeaturesHelper {
     val zippedFlow = AkkaStreamUtil.zipNFlows(executors.map(_.flows))
 
     ehrDataSource
-      .collect { case (x, Some(y), z) => (x, y, z) }
+      .collect { case (x, Some(y), z) => (x, y, z) } // filter out entries with null dates
       .via(zippedFlow)
       .runWith(Sink.head)
       .map { multiResults =>
         val flattenedResults = multiResults.flatten
         logger.info(s"Processing '${input.filePath}' with ${flattenedResults.size} flows done in ${new Date().getTime - start.getTime} ms.")
 
-        val extras = executors.flatMap(_.extras)
+        val outSpecs = executors.flatMap(_.outputSpecs)
 
-        // post process
-        val processedResults =
-          (extras.map(_.postProcess), flattenedResults).zipped.map { case (post, results) =>
-            results.map { case (personId, value) => (personId, post(value)) }
+        (outSpecs, flattenedResults).zipped.flatMap { case (outputSpecs, results) =>
+          outputSpecs.map { outputSpec =>
+            // post process
+            val processedResult = results.flatMap { case (personId, value) => outputSpec.postProcess(value).map((personId, _)) }
+
+            // console out
+            logger.info(s" Results for '${outputSpec.outputColumnName}': ${outputSpec.consoleOut(processedResult)}")
+
+            (outputSpec, processedResult)
           }
-
-        // console outs
-        (extras.map(_.outputColumnName), processedResults, extras.map(_.consoleOut)).zipped.map { case  (outputColumnName, results, consoleOut) =>
-          logger.info(s" Results for '${outputColumnName}': ${consoleOut(results)}")
-          (outputColumnName, results)
         }
       }
   }
@@ -338,36 +352,36 @@ trait CalcFeaturesHelper {
   private def featureExecutorsAndColumns(
     categoryNameConceptIdsMap: Map[String, Set[Int]])(
     tableFeatures: TableFeatures
-  ): (Seq[FeatureExecutor[_]], Seq[String]) = {
+  ): (Seq[FeatureExecutor[_, _]], Seq[String]) = {
     // ref columns
-    val refColumns = tableFeatures.extractions.flatMap(_.columns).toSet.toSeq
+    val refColumns = tableFeatures.extractions.flatMap(_.inputColumns).toSet.toSeq
     val columns = refColumns.map(_.toString)
 
     // create executors
-    val executorFactory = new FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns, categoryNameConceptIdsMap)
+    val executorFactory = FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns, categoryNameConceptIdsMap)
     val executors = tableFeatures.extractions.map(executorFactory.apply)
 
     (executors, columns)
   }
 
   protected def groupResults[T](
-    results: Seq[(String, scala.collection.Map[Int, T])],
-    notFoundValues: Seq[Option[T]]
-  ): (Seq[String], Seq[(Int, Seq[Option[T]])]) = {
-    val personIds = results.flatMap(_._2.keySet).toSet.toSeq.sorted
+    outputSpecs: Seq[FeatureExecutorOutputSpec[_, T]],
+    results: Seq[scala.collection.Map[Int, T]]
+  ): (Seq[String], Seq[(Int, Seq[Option[Any]])]) = {
+    val personIds = results.flatMap(_.keySet).toSet.toSeq.sorted
 
     // link person ids with results
     val personResults = personIds.map { personId =>
-      val personResults = results.zip(notFoundValues).map { case ((_, result), notFoundValue) =>
+      val personResults = results.zip(outputSpecs).map { case (result, outputSpec) =>
         result.get(personId) match {
           case Some(value) => Some(value)
-          case None => notFoundValue
+          case None => outputSpec.undefinedValue
         }
       }
       (personId, personResults)
     }
 
-    val columnNames = results.map(_._1)
+    val columnNames = outputSpecs.map(_.outputColumnName)
     (columnNames, personResults)
   }
 
@@ -418,7 +432,7 @@ trait CalcFeaturesHelper {
   ) =
     Future.sequence(
       tableFeatures.map { tableFeatures =>
-        val extraColumns = tableFeatures.extractions.flatMap(_.columns.map(_.toString)).toSet.toSeq
+        val extraColumns = tableFeatures.extractions.flatMap(_.inputColumns.map(_.toString)).toSet.toSeq
         val table = tableFeatures.table
         sortByDate(inputPath, table, extraColumns, timeZone, personColumnName)
       }
