@@ -82,14 +82,15 @@ case class ConceptCategoryIsLastDefined[C](
 // Time lags
 
 case class TimeLagStats[C]() extends FeatureExtraction[C] {
-  private def col(suffix: String) =
-    suffix -> OutputColumn("time_lag_" + suffix, true)
+  private def col(suffix: String, isNumeric: Boolean = true) =
+    suffix -> OutputColumn("time_lag_" + suffix, isNumeric)
 
   private val suffixOutputColumns = Seq(
     col("mean"),
     col("std"),
     col("min"),
-    col("max")
+    col("max"),
+    col("rel_diff_most_freq", false),
   )
 
   override val outputColumns = suffixOutputColumns.map(_._2)

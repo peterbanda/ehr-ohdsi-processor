@@ -2,10 +2,10 @@ package com.bnd.ehrop.akka
 
 import akka.stream.scaladsl.Flow
 import akka.NotUsed
-
 import java.util.Date
 
 import scala.collection.mutable
+import scala.util.Random
 
 object AkkaFlow {
 
@@ -294,23 +294,60 @@ object AkkaFlow {
   def diffs =
     Flow[Double].sliding(2).map { els => els(1) - els(0) }
 
+  def binIndex(prevDiff: Double, diff: Double) = {
+    def binIndex(relativeDiff: Double) =
+      relativeDiff match {
+        case x if x < -0.75 => 0
+        case x if x >= -0.75 && x < -0.3333 => 1
+        case x if x >= -0.3333 && x < 0.5 => 2
+        case x if x >= 0.5 && x < 3 => 3
+        case x if x >= 3 => 4
+      }
+
+    if (prevDiff != 0) {
+      val relativeDiff = (diff - prevDiff) / prevDiff
+      binIndex(relativeDiff)
+    } else if ((diff - prevDiff) == 0)
+      binIndex(0)
+    else
+      binIndex(Double.MaxValue)
+  }
+
   def calcDiffStats: Flow[(Int, Double), mutable.Map[Int, DiffStatsAccum], NotUsed] =
     Flow[(Int, Double)].fold[mutable.Map[Int, DiffStatsAccum]](
       mutable.Map[Int, DiffStatsAccum]()
     ) {
       case (map, (id, value)) =>
-        val accum = map.get(id).getOrElse(DiffStatsAccum(0, 0, 0, Double.MaxValue, Double.MinValue, None))
+        val accum = map.get(id).getOrElse(
+          DiffStatsAccum(
+            0, 0, 0, Double.MaxValue, Double.MinValue, None, None, mutable.ArraySeq[Int](Seq.fill(5)(0) :_*)
+          )
+        )
 
         val newAccum = accum.prev match {
           case Some(prev) =>
-            val diff: Double = value - prev
+            val diff = value - prev
+            val relativeDiffCounts = accum.relativeDiffCounts
+
+            val newDiffCounts = accum.prevDiff match {
+              case Some(prevDiff) =>
+                val index = binIndex(prevDiff, diff)
+                relativeDiffCounts.update(index, relativeDiffCounts(index) + 1)
+                relativeDiffCounts
+
+              case None =>
+                relativeDiffCounts
+            }
+
             DiffStatsAccum(
               accum.sum + diff,
               accum.sqSum + diff * diff,
               accum.count + 1,
               Math.min(accum.min, diff),
               Math.max(accum.max, diff),
-              Some(value)
+              prev = Some(value),
+              prevDiff = Some(diff),
+              newDiffCounts
             )
 
           case None =>
@@ -331,13 +368,22 @@ object AkkaFlow {
     } else
       None
 
-  def calcFullStats(accum: DiffStatsAccum): Option[Stats] =
+  def calcDiffStats(accum: DiffStatsAccum): Option[DiffStats] =
     if (accum.count > 0) {
       val mean = accum.sum / accum.count
       val variance = (accum.sqSum / accum.count) - mean * mean
       val std = Math.sqrt(variance)
 
-      Some(Stats(mean, variance, std, accum.min, accum.max))
+      val maxCount = accum.relativeDiffCounts.max
+      val maxCountIndex =
+        if (maxCount > 0) {
+          val maxCountIndeces = accum.relativeDiffCounts.zipWithIndex.filter(_._1 == maxCount).map(_._2)
+          val maxCountIndexRaw = maxCountIndeces(Random.nextInt(maxCountIndeces.size))
+          Some((maxCountIndexRaw - 2).toDouble / 2)
+        } else
+          None
+
+      Some(DiffStats(mean, variance, std, accum.min, accum.max, maxCountIndex))
     } else
       None
 }
@@ -354,13 +400,16 @@ case class DiffStatsAccum(
   count: Int,
   min: Double,
   max: Double,
-  prev: Option[Double]
+  prev: Option[Double],
+  prevDiff: Option[Double],
+  relativeDiffCounts: mutable.ArraySeq[Int]
 )
 
-case class Stats(
+case class DiffStats(
   mean: Double,
   variance: Double,
   std: Double,
   min: Double,
-  max: Double
+  max: Double,
+  mostFreqRelativeDiff: Option[Double]
 )

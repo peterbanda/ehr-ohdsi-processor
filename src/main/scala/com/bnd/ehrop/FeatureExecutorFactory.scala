@@ -166,34 +166,51 @@ private final class FeatureExecutorFactoryImpl[C](
 
         def outputSpec[T, Double](
           postProcess: T => Option[Double],
-          suffix: String
+          suffix: String,
+          consoleOut: Option[mutable.Map[Int, Double] => String] = None
         ) = {
+          val consoleOutX = consoleOut.getOrElse(
+            (map: mutable.Map[Int, Double]) => map.map(_._2).size.toString
+          )
+
           FeatureExecutorOutputSpec[T, Double](
             postProcess = postProcess,
-            consoleOut = (map: mutable.Map[Int, Double]) => map.map(_._2).size.toString,
+            consoleOut = consoleOutX,
             tableName + "_" + spec.outputColumn(suffix).name,
           )
         }
 
         val outputs = Seq(
           outputSpec(
-            (accum: DiffStatsAccum) => AkkaFlow.calcFullStats(accum).map(_.mean),
+            (accum: DiffStatsAccum) => AkkaFlow.calcDiffStats(accum).map(_.mean),
             "mean"
           ),
 
           outputSpec(
-            (accum: DiffStatsAccum) => AkkaFlow.calcFullStats(accum).map(_.std),
+            (accum: DiffStatsAccum) => AkkaFlow.calcDiffStats(accum).map(_.std),
             "std"
           ),
 
           outputSpec(
-            (accum: DiffStatsAccum) => AkkaFlow.calcFullStats(accum).map(_.min),
+            (accum: DiffStatsAccum) => AkkaFlow.calcDiffStats(accum).map(_.min),
             "min"
           ),
 
           outputSpec(
-            (accum: DiffStatsAccum) => AkkaFlow.calcFullStats(accum).map(_.max),
+            (accum: DiffStatsAccum) => AkkaFlow.calcDiffStats(accum).map(_.max),
             "max"
+          ),
+
+          outputSpec(
+            (accum: DiffStatsAccum) => AkkaFlow.calcDiffStats(accum).flatMap(_.mostFreqRelativeDiff),
+            "rel_diff_most_freq",
+            Some {
+              (map: mutable.Map[Int, Double]) =>
+                val values = map.map(_._2)
+                def count(value: Double) = values.count(_ == value)
+
+                s"${values.size} => -1: ${count(-1)}, -0.5: ${count(-0.5)}, 0: ${count(0)}, 0.5: ${count(0.5)}, 1: ${count(1)}"
+            }
           )
         )
 
