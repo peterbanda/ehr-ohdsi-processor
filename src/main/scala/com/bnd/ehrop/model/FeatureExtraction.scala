@@ -103,6 +103,14 @@ case class TimeLagStats[C]() extends FeatureExtraction[C] {
     )
 }
 
+// Duration
+
+case class DurationFromFirst[C]() extends SingleOutFeatureExtraction[C] {
+  override val outputColumn = OutputColumn("duration", true)
+}
+
+// table features
+
 trait TableFeatures {
   val table: Table
   val extractions: Seq[FeatureExtraction[table.Col]]

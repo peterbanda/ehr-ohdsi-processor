@@ -1,9 +1,9 @@
 package com.bnd.ehrop
 
-import com.bnd.ehrop.FeatureCalcTypes.{EHRData, EHRFlow, SeqEHRFlow}
+import com.bnd.ehrop.FeatureCalcTypes.EHRData
 import com.bnd.ehrop.akka.{AkkaFlow, DiffStatsAccum}
 import com.bnd.ehrop.model._
-import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
+import _root_.akka.stream.scaladsl.Flow
 
 import scala.collection.mutable
 
@@ -15,12 +15,13 @@ object FeatureExecutorFactory {
   def apply[C](
     tableName: String,
     refColumns: Seq[C] = Nil,
-    categoryNameConceptIdsMap: Map[String, Set[Int]] = Map()
+    categoryNameConceptIdsMap: Map[String, Set[Int]] = Map(),
+    personLastVisitDateMap: Map[Int, Long] = Map()
   ): FeatureExecutorFactory[C] =
-    new FeatureExecutorFactoryImpl(tableName, refColumns, categoryNameConceptIdsMap)
+    new FeatureExecutorFactoryImpl(tableName, refColumns, categoryNameConceptIdsMap, personLastVisitDateMap)
 }
 
-// We use 7 flows/feature generation types:
+// We use 9 flows/feature generation types:
 // - 1. count
 // - 2. distinct (concept) count
 // - 3. sum
@@ -29,10 +30,12 @@ object FeatureExecutorFactory {
 // - 6. count in a concept category
 // - 7. is last in a concept category
 // - 8. time lags basic stats
+// - 9. duration from first
 private final class FeatureExecutorFactoryImpl[C](
   tableName: String,
   refColumns: Seq[C],
-  categoryNameConceptIdsMap: Map[String, Set[Int]]
+  categoryNameConceptIdsMap: Map[String, Set[Int]],
+  personLastVisitDateMap: Map[Int, Long]
 ) extends FeatureExecutorFactory[C] {
   private val columnIndexMap = refColumns.zipWithIndex.toMap
 
@@ -46,6 +49,8 @@ private final class FeatureExecutorFactoryImpl[C](
     def outputColumnName(extraction: SingleOutFeatureExtraction[C]) =
       tableName + "_" + extraction.outputColumn.name
 
+    def justValue[T](id: Int, value: T): Option[T] = Some(value)
+
     feature match {
       // 1. count
       case spec: Count[C] =>
@@ -53,9 +58,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .map { case (x, _, _) => x } // we take only the ids
           .via(AkkaFlow.countAll)
 
-        FeatureExecutor[Int, Int](
+        FeatureExecutor.singleOut[Int, Int](
           flow,
-          postProcess = Some[Int](_),
+          postProcess = justValue[Int],
           consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -69,9 +74,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.collectDistinct[Int])
 
-        FeatureExecutor[mutable.Set[Int], Int](
+        FeatureExecutor.singleOut[mutable.Set[Int], Int](
           flow,
-          postProcess = (value: mutable.Set[Int]) => Some(value.size),
+          postProcess = (_, value: mutable.Set[Int]) => Some(value.size),
           consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -85,9 +90,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.sum)
 
-        FeatureExecutor[Int, Int](
+        FeatureExecutor.singleOut[Int, Int](
           flow,
-          postProcess = Some[Int](_),
+          postProcess = justValue[Int],
           consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -100,9 +105,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .map { case (x, y, z) => (x, y, z(index)) }
           .via(AkkaFlow.lastDefined[Long, Int])
 
-        FeatureExecutor[(Long, Int), Int](
+        FeatureExecutor.singleOut[(Long, Int), Int](
           flow,
-          postProcess = (value: (Long, Int)) => Some(value._2),
+          postProcess = (_, value: (Long, Int)) => Some(value._2),
           consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
           outputColumnName(spec),
           undefinedValue = None
@@ -117,9 +122,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.existsIn(ids))
 
-        FeatureExecutor[Boolean, Int](
+        FeatureExecutor.singleOut[Boolean, Int](
           flow,
-          postProcess = (value: Boolean) => Some(if (value) 1 else 0),
+          postProcess = (_, value: Boolean) => Some(if (value) 1 else 0),
           consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -134,9 +139,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .collect { case (x, Some(z)) => (x, z) }
           .via(AkkaFlow.countIn(ids))
 
-        FeatureExecutor[Int, Int](
+        FeatureExecutor.singleOut[Int, Int](
           flow,
-          postProcess = Some[Int](_),
+          postProcess = justValue[Int],
           consoleOut = (map: mutable.Map[Int, Int]) => map.map(_._2).sum.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -150,9 +155,9 @@ private final class FeatureExecutorFactoryImpl[C](
           .map { case (x, y, z) => (x, y, z(index)) }
           .via(AkkaFlow.lastDefined[Long, Int])
 
-        FeatureExecutor[(Long, Int), Int](
+        FeatureExecutor.singleOut[(Long, Int), Int](
           flow,
-          postProcess = (tuple: (Long, Int)) => Some(if (ids.contains(tuple._2)) 1 else 0),
+          postProcess = (_, tuple: (Long, Int)) => Some(if (ids.contains(tuple._2)) 1 else 0),
           consoleOut = (map: mutable.Map[Int, Int]) => map.size.toString,
           outputColumnName(spec),
           undefinedValue = Some(0)
@@ -174,7 +179,7 @@ private final class FeatureExecutorFactoryImpl[C](
           )
 
           FeatureExecutorOutputSpec[T, Double](
-            postProcess = postProcess,
+            postProcess = (_, value) => postProcess(value),
             consoleOut = consoleOutX,
             tableName + "_" + spec.outputColumn(suffix).name,
           )
@@ -215,6 +220,19 @@ private final class FeatureExecutorFactoryImpl[C](
         )
 
         FeatureExecutor[DiffStatsAccum, Double](flow, outputs)
+
+      // 9. duration
+      case spec: DurationFromFirst[C] =>
+        val flow = () => Flow[EHRData]
+          .map { case (x, y, _) => (x, y) }
+          .via(AkkaFlow.minDate)
+
+        FeatureExecutor.singleOut[Long, Double](
+          flow,
+          postProcess = (id: Int, firstDate: Long) => personLastVisitDateMap.get(id).map( lastVisitDate => (lastVisitDate - firstDate) / milisInDay ) ,
+          consoleOut = (map: mutable.Map[Int, Double]) => map.map(_._2).size.toString,
+          outputColumnName(spec)
+        )
     }
   }
 }

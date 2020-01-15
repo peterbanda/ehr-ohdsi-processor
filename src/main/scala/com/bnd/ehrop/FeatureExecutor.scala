@@ -16,7 +16,7 @@ case class SeqFeatureExecutors[T, O](
 )
 
 case class FeatureExecutorOutputSpec[T, O](
-  postProcess: T => Option[O],
+  postProcess: (Int, T) => Option[O],
   consoleOut: mutable.Map[Int, O] => String,
   outputColumnName: String,
   undefinedValue: Option[O] = None,
@@ -30,9 +30,9 @@ case class TableFeatureExecutorInputSpec(
 )
 
 object FeatureExecutor {
-  def apply[T, O](
+  def singleOut[T, O](
     flow: () => EHRFlow[T],
-    postProcess: T => Option[O],
+    postProcess: (Int, T) => Option[O],
     consoleOut: mutable.Map[Int, O] => String,
     outputColumnName: String,
     undefinedValue: Option[O] = None,

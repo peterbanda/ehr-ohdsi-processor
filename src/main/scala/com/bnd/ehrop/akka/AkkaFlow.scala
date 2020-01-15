@@ -135,6 +135,15 @@ object AkkaFlow {
         map
     }
 
+  def minDate: Flow[(Int, Long), mutable.Map[Int, Long], NotUsed] =
+    Flow[(Int, Long)].fold[mutable.Map[Int, Long]](
+      mutable.Map[Int, Long]()
+    ) {
+      case (map, (id, date)) =>
+        map.update(id, Math.min(map.getOrElse(id, Long.MaxValue), date))
+        map
+    }
+
   def count1X(
     idFromToDatesMap: Map[Int, (Long, Long)]
   ): Flow[(Int, Long), mutable.Map[Int, Int], NotUsed] =

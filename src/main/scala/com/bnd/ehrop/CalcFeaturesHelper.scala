@@ -90,6 +90,7 @@ trait CalcFeaturesHelper extends BasicHelper {
         calcFeatures(
           if (withTimeLags) outputRootPath else inputRootPath,
           dateIntervalsWithLabels,
+          lastVisitMilisDates,
           featureSpecs,
           conceptCategories,
           withTimeLags,
@@ -204,6 +205,7 @@ trait CalcFeaturesHelper extends BasicHelper {
   def calcFeatures(
     rootPath: String,
     idDateRangesWithLabels: Seq[(Map[Int, (Long, Long)], String)],
+    idLastVisitDateMap: Map[Int, Long],
     tableFeatures: Seq[TableFeatures],
     conceptCategories: Seq[ConceptCategory],
     withTimeLags: Boolean,
@@ -214,7 +216,7 @@ trait CalcFeaturesHelper extends BasicHelper {
 
     // create feature executors with data columns
     val categoryNameConceptIdsMap = conceptCategories.map(category => (category.name, category.conceptIds)).toMap
-    val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns(categoryNameConceptIdsMap))
+    val executorsAndColumns = tableFeatures.map(featureExecutorsAndColumns(categoryNameConceptIdsMap, idLastVisitDateMap))
 
     // for each table create input spec with seq executors
     val seqExecsWithInputs = tableFeatures.map(_.table).zip(executorsAndColumns).map { case (table, (executors, dataColumns)) =>
@@ -308,7 +310,7 @@ trait CalcFeaturesHelper extends BasicHelper {
         (outSpecs, flattenedResults).zipped.flatMap { case (outputSpecs, results) =>
           outputSpecs.map { outputSpec =>
             // post process
-            val processedResult = results.flatMap { case (personId, value) => outputSpec.postProcess(value).map((personId, _)) }
+            val processedResult = results.flatMap { case (personId, value) => outputSpec.postProcess(personId, value).map((personId, _)) }
 
             // console out
             logger.info(s" Results for '${outputSpec.outputColumnName}': ${outputSpec.consoleOut(processedResult)}")
@@ -348,7 +350,8 @@ trait CalcFeaturesHelper extends BasicHelper {
     }
 
   private def featureExecutorsAndColumns(
-    categoryNameConceptIdsMap: Map[String, Set[Int]])(
+    categoryNameConceptIdsMap: Map[String, Set[Int]],
+    personLastVisitDateMap: Map[Int, Long])(
     tableFeatures: TableFeatures
   ): (Seq[FeatureExecutor[_, _]], Seq[String]) = {
     // ref columns
@@ -356,7 +359,7 @@ trait CalcFeaturesHelper extends BasicHelper {
     val columns = refColumns.map(_.toString)
 
     // create executors
-    val executorFactory = FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns, categoryNameConceptIdsMap)
+    val executorFactory = FeatureExecutorFactory[tableFeatures.table.Col](tableFeatures.table.name, refColumns, categoryNameConceptIdsMap, personLastVisitDateMap)
     val executors = tableFeatures.extractions.map(executorFactory.apply)
 
     (executors, columns)

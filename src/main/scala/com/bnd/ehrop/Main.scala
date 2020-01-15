@@ -3,8 +3,6 @@ package com.bnd.ehrop
 import com.bnd.ehrop.akka.AkkaFileSource
 import _root_.akka.actor.ActorSystem
 import _root_.akka.stream.ActorMaterializer
-import com.bnd.ehrop.akka.AkkaFileSource.{asDateMilis, asInt, indexColumnSafe, logger}
-import com.bnd.ehrop.model.{OutputColumn, Table, TimeLagStats}
 
 object Main extends App with AppExt {
 

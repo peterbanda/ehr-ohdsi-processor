@@ -110,6 +110,9 @@ trait AppExt extends BasicHelper {
               extractionObject.get("categoryName").unwrapped().asInstanceOf[String]
             )
 
+          case "DurationFromFirst" =>
+            DurationFromFirst[table.Col]()
+
           case _ => throw new IllegalArgumentException(s"Feature extraction type '${extractionType}' not recognized.")
         }
       }
