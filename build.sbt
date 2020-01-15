@@ -2,7 +2,7 @@ organization := "com.bnd"
 
 name := "ehr-ohdsi-processor"
 
-version := "0.2.1"
+version := "0.3.0"
 
 scalaVersion := "2.12.10"
 
