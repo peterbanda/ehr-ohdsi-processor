@@ -112,8 +112,8 @@ trait CalcFeaturesHelper extends BasicHelper {
         (personId, personResults.map(_.getOrElse("")))
       }.toMap
 
-      // not-found values to report if a person not found
-      notFoundValues = featureResults.notFoundValues.map(_.map(_.toString).getOrElse(""))
+      // not-found feature values to report if a person not found
+      notFoundFeatureValues = featureResults.notFoundValues.map(_.map(_.toString).getOrElse(""))
 
       personOutputSource = csvAsSourceWithTransform(tableFile(person),
         header => {
@@ -160,15 +160,17 @@ trait CalcFeaturesHelper extends BasicHelper {
               }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
-              val features = personFeatureStringsMap.get(personId).getOrElse(notFoundValues)
+              val features = personFeatureStringsMap.get(personId).getOrElse(notFoundFeatureValues)
 
+              // calc the scores
               val scoreValues = scores.flatMap { score =>
                 calcIntervalScores(
                   score,
                   dateIntervals,
                   featureSpecs,
                   featureResults.columnNames,
-                  personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
+                  personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues),
+                  withTimeLags
                 )
               }
 
@@ -197,9 +199,9 @@ trait CalcFeaturesHelper extends BasicHelper {
       // exporting
       _ <- {
         val scoreColumnNames =
-          dateIntervals.flatMap { dateInterval =>
-            scores.map(score => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label)
-          }
+          scores.flatMap(score =>
+            dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
+          )
 
         val header = (
           Seq(
@@ -223,20 +225,17 @@ trait CalcFeaturesHelper extends BasicHelper {
       System.exit(0)
   }
 
-  private def asLowerCaseUnderscore(string: String) =
-    string.replaceAll("[^\\p{Alnum}]", "_").toLowerCase
-
   private def calcIntervalScores(
     score: Score,
     dateIntervals: Seq[DayInterval],
     featureSpecs: Seq[TableFeatures],
     columnNames: Seq[String],
-    values: Seq[Option[Any]]
+    values: Seq[Option[Any]],
+    withTimeLags: Boolean,
   ): Seq[Int] = {
     val dayIntervalCategoryNames = featureSpecs.flatMap { tableFeatures =>
-      val tableName = tableFeatures.table.name
 
-      dateIntervals.flatMap { dateInterval =>
+      val part1 = dateIntervals.flatMap { dateInterval =>
         val intervalName = dateInterval.label
 
         tableFeatures.extractions.map { feature =>
@@ -255,6 +254,10 @@ trait CalcFeaturesHelper extends BasicHelper {
           }
         }
       }
+
+      val part2 =  if (withTimeLags) Seq.fill(TimeLagStats().outputColumns.size)(None) else Nil
+
+      part1 ++ part2
     }
 
     val intervalCategoryIndecesMap = dayIntervalCategoryNames.zipWithIndex
@@ -271,10 +274,7 @@ trait CalcFeaturesHelper extends BasicHelper {
           }.getOrElse(0)
         }.sum
 
-        if (sum > 0)
-          element.weight
-        else
-          0
+        if (sum > 0) element.weight else 0
       }.sum
     }
   }

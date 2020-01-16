@@ -173,4 +173,7 @@ trait BasicHelper {
   protected val defaultTimeZone = TimeZone.getTimeZone("CET") // CEST
 
   def withBackslash(string: String) = if (string.endsWith("/")) string else string + "/"
+
+  def asLowerCaseUnderscore(string: String) =
+    string.replaceAll("[^\\p{Alnum}]", "_").toLowerCase
 }

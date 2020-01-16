@@ -231,7 +231,8 @@ private final class FeatureExecutorFactoryImpl[C](
           flow,
           postProcess = (id: Int, firstDate: Long) => personLastVisitDateMap.get(id).map( lastVisitDate => (lastVisitDate - firstDate) / milisInDay ) ,
           consoleOut = (map: mutable.Map[Int, Double]) => map.map(_._2).size.toString,
-          outputColumnName(spec)
+          outputColumnName(spec),
+          undefinedValue = Some(0) // no data -> zero duration
         )
     }
   }

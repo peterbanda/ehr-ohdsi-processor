@@ -61,8 +61,8 @@ trait Standardize extends AppExt {
       logger.info(message)
     }
 
-    val derivedNumColumnNames =
-      tableFeatureSpecs.flatMap { tableFeatures =>
+    val derivedNumColumnNames = {
+      val featureColumnNames = tableFeatureSpecs.flatMap { tableFeatures =>
         val tableName = tableFeatures.table.name
         val standardFeatures = dateIntervals.flatMap(dateInterval =>
           tableFeatures.extractions.flatMap(feature =>
@@ -79,6 +79,14 @@ trait Standardize extends AppExt {
 
         standardFeatures ++ (if (withTimeLags) timeLagFeatures else Nil)
       }
+
+      val scoreColumnNames =
+        scores.flatMap(score =>
+          dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
+        )
+
+      featureColumnNames ++ scoreColumnNames
+    }
 
     {
       for {
