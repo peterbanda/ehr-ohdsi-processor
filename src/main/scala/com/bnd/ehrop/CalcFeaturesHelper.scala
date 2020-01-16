@@ -25,8 +25,9 @@ trait CalcFeaturesHelper extends BasicHelper {
   def calcAndExportFeatures(
     inputRootPath: String,
     featureSpecs: Seq[TableFeatures],
-    dayIntervals: Seq[DayInterval],
+    dateIntervals: Seq[DayInterval],
     conceptCategories: Seq[ConceptCategory],
+    scores: Seq[Score],
     timeZone: TimeZone,
     withTimeLags: Boolean = false,
     outputFileName: String
@@ -82,7 +83,7 @@ trait CalcFeaturesHelper extends BasicHelper {
 
       // calc features for different the periods
       featureResults <- {
-        val dateIntervalsWithLabels = dayIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
+        val dateIntervalsWithLabels = dateIntervals.map { case DayInterval(label, fromDaysShift, toDaysShift) =>
           val range = dateIntervalsMilis(lastVisitMilisDates, fromDaysShift, toDaysShift)
           (range, label)
         }
@@ -96,13 +97,18 @@ trait CalcFeaturesHelper extends BasicHelper {
           withTimeLags,
           timeZone
         ).map { features =>
-          logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dayIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished.")
+          logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dateIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished. Obtained ${features.columnNames.size} features in total.")
+          if (scores.nonEmpty) {
+            logger.info(s"Note that in addition, ${scores.size} scores will be calculated for ${dateIntervals.size} date intervals.")
+          }
           features
         }
       }
 
-      // person-features map
-      personFeaturesMap = featureResults.personFeatures.map { case (personId, personResults) =>
+      personFeaturesMap = featureResults.personFeatures.toMap
+
+      // person feature strings map
+      personFeatureStringsMap = featureResults.personFeatures.map { case (personId, personResults) =>
         (personId, personResults.map(_.getOrElse("")))
       }.toMap
 
@@ -154,7 +160,17 @@ trait CalcFeaturesHelper extends BasicHelper {
               }
               val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
 
-              val features = personFeaturesMap.get(personId).getOrElse(notFoundValues)
+              val features = personFeatureStringsMap.get(personId).getOrElse(notFoundValues)
+
+              val scoreValues = scores.flatMap { score =>
+                calcIntervalScores(
+                  score,
+                  dateIntervals,
+                  featureSpecs,
+                  featureResults.columnNames,
+                  personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
+                )
+              }
 
               (
                 Seq(
@@ -168,7 +184,7 @@ trait CalcFeaturesHelper extends BasicHelper {
                   lastVisitMilisDate.getOrElse("")
                 ) ++ (
                   if (hasDeathFile) Seq(isDeadIn6Months) else Nil
-                ) ++ features
+                ) ++ features ++ scoreValues
               ).mkString(",")
             } catch {
               case e: Exception =>
@@ -180,6 +196,11 @@ trait CalcFeaturesHelper extends BasicHelper {
 
       // exporting
       _ <- {
+        val scoreColumnNames =
+          dateIntervals.flatMap { dateInterval =>
+            scores.map(score => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label)
+          }
+
         val header = (
           Seq(
             "person_id",
@@ -192,7 +213,7 @@ trait CalcFeaturesHelper extends BasicHelper {
             "visit_end_date"
           ) ++ (
             if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
-            ) ++ featureResults.columnNames
+            ) ++ featureResults.columnNames ++ scoreColumnNames
         ).mkString(",")
 
         logger.info(s"Exporting results to '${outputFileName}.")
@@ -200,6 +221,62 @@ trait CalcFeaturesHelper extends BasicHelper {
       }
     } yield
       System.exit(0)
+  }
+
+  private def asLowerCaseUnderscore(string: String) =
+    string.replaceAll("[^\\p{Alnum}]", "_").toLowerCase
+
+  private def calcIntervalScores(
+    score: Score,
+    dateIntervals: Seq[DayInterval],
+    featureSpecs: Seq[TableFeatures],
+    columnNames: Seq[String],
+    values: Seq[Option[Any]]
+  ): Seq[Int] = {
+    val dayIntervalCategoryNames = featureSpecs.flatMap { tableFeatures =>
+      val tableName = tableFeatures.table.name
+
+      dateIntervals.flatMap { dateInterval =>
+        val intervalName = dateInterval.label
+
+        tableFeatures.extractions.map { feature =>
+          feature match {
+            case x: ConceptCategoryExists[_] =>
+              Some((intervalName, x.categoryName))
+
+            case x: ConceptCategoryCount[_] =>
+              Some((intervalName, x.categoryName))
+
+            case x: ConceptCategoryIsLastDefined[_] =>
+              Some((intervalName, x.categoryName))
+
+            case _ =>
+              None
+          }
+        }
+      }
+    }
+
+    val intervalCategoryIndecesMap = dayIntervalCategoryNames.zipWithIndex
+      .collect { case (Some(names), index) => (names, index) }.groupBy(_._1)
+      .map { case (names, values) => (names, values.map(_._2))}
+
+    dateIntervals.map { dateInterval =>
+      val intervalName = dateInterval.label
+
+      score.elements.map { element =>
+        val sum = element.categoryNames.map { categoryName =>
+          intervalCategoryIndecesMap.get((intervalName, categoryName)).map { indeces =>
+            indeces.flatMap(values(_)).map(_.asInstanceOf[Int]).sum
+          }.getOrElse(0)
+        }.sum
+
+        if (sum > 0)
+          element.weight
+        else
+          0
+      }.sum
+    }
   }
 
   def calcFeatures(

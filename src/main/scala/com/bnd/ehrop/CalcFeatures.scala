@@ -47,6 +47,7 @@ trait CalcFeatures extends AppExt {
       tableFeatureSpecs,
       dateIntervals,
       conceptCategories,
+      scores,
       TimeZone.getTimeZone(timeZoneCode),
       withTimeLags,
       outputFile

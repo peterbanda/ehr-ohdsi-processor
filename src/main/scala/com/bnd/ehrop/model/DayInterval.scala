@@ -5,9 +5,3 @@ case class DayInterval(
   fromDaysShift: Int,
   toDaysShift: Int
 )
-
-object XXX extends App {
-  println(Table.death.name)
-  println(Table.death.fileName)
-  println(Table.death.columns.mkString(", "))
-}
