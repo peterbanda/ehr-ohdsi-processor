@@ -3,7 +3,7 @@ package com.bnd.ehrop
 import java.util.{Calendar, Date, TimeZone}
 
 import com.bnd.ehrop.akka.{AkkaFileSource, AkkaFlow, AkkaStreamUtil}
-import com.bnd.ehrop.akka.AkkaFileSource.{csvAsSourceWithTransform}
+import com.bnd.ehrop.akka.AkkaFileSource.csvAsSourceWithTransform
 import com.bnd.ehrop.model._
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Sink, Source}
@@ -15,8 +15,9 @@ import org.apache.commons.io.FileUtils
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
-
 import java.io.File
+
+import com.bnd.ehrop.model.Table.person
 
 trait CalcFeaturesHelper extends BasicHelper {
 
@@ -28,15 +29,19 @@ trait CalcFeaturesHelper extends BasicHelper {
     dateIntervals: Seq[DayInterval],
     conceptCategories: Seq[ConceptCategory],
     scores: Seq[Score],
+    dynamicScores: Seq[DynamicScore],
     timeZone: TimeZone,
     withTimeLags: Boolean = false,
-    outputFileName: String
-  )(
-    implicit materializer: Materializer, executionContext: ExecutionContext
+    dynamicScoreWeightsOutputFileName: Option[String],
+    dynamicScoreWeightsInputFileName: Option[String],
+    outputFileName: String)(
+    implicit materializer: Materializer,
+    executionContext: ExecutionContext
   ) = {
     val outputRootPath = withBackslash(new File(outputFileName).getParent)
 
     def tableFile(table: Table) = table.path(inputRootPath)
+
     def tableFileSorted(table: Table) = table.sortPath(outputRootPath)
 
     import Table._
@@ -98,8 +103,8 @@ trait CalcFeaturesHelper extends BasicHelper {
           timeZone
         ).map { features =>
           logger.info(s"Feature generation for ${featureSpecsCount} feature specs, ${dateIntervals.size} date intervals, and ${conceptCategories.size} concept categories finished. Obtained ${features.columnNames.size} features in total.")
-          if (scores.nonEmpty) {
-            logger.info(s"Note that in addition, ${scores.size} scores will be calculated for ${dateIntervals.size} date intervals.")
+          if (scores.nonEmpty || dynamicScores.nonEmpty) {
+            logger.info(s"Note that in addition ${scores.size} scores and ${dynamicScores.size} dynamic scores will be calculated for ${dateIntervals.size} date intervals.")
           }
           features
         }
@@ -114,6 +119,36 @@ trait CalcFeaturesHelper extends BasicHelper {
 
       // not-found feature values to report if a person not found
       notFoundFeatureValues = featureResults.notFoundValues.map(_.map(_.toString).getOrElse(""))
+
+      // date interval-category name -> indeces map
+      intervalCategoryIndecesMap = getIntervalCategoryFeatureIndecesMap(dateIntervals, featureSpecs, withTimeLags)
+
+      // calc or import the weights for given dynamic scores
+      dynamicScoreWeights <-
+        if (dynamicScoreWeightsInputFileName.isDefined) {
+          logger.info(s"Parsing and importing the dynamic score weights from '${dynamicScoreWeightsInputFileName.get}'...")
+          importDynamicScoreWeights(dynamicScoreWeightsInputFileName.get, dynamicScores)
+
+        } else if (hasDeathFile) {
+          logger.info(s"Calculating weights for ${dynamicScores.size} dynamic scores...")
+
+          if (dynamicScores.nonEmpty)
+            calcDynamicScoreWeights(
+              intervalCategoryIndecesMap,
+              inputRootPath,
+              dynamicScores,
+              dateIntervals,
+              featureResults.personFeatures.toMap,
+              lastVisitMilisDates,
+              deadIn6MonthsPersonIds,
+              timeZone
+            )
+          else
+            Future(Nil)
+        } else {
+          logger.warn(s"Cannot calculate dynamic score weights because the death file '${tableFile(death)}' is not available.")
+          Future(Nil)
+        }
 
       personOutputSource = csvAsSourceWithTransform(tableFile(person),
         header => {
@@ -165,14 +200,29 @@ trait CalcFeaturesHelper extends BasicHelper {
               // calc the scores
               val scoreValues = scores.flatMap { score =>
                 calcIntervalScores(
+                  intervalCategoryIndecesMap)(
                   score,
                   dateIntervals,
-                  featureSpecs,
-                  featureResults.columnNames,
-                  personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues),
-                  withTimeLags
+                  personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
                 )
               }
+
+              // calc the dynamic scores
+              val dynamicScoreValues =
+                if (ageAtLastVisit.isDefined) {
+                  dynamicScores.zip(dynamicScoreWeights).flatMap { case (score, intervalAgeBinnedWeights) =>
+                    calcIntervalDynamicScores(
+                      intervalCategoryIndecesMap)(
+                      score,
+                      ageAtLastVisit.get,
+                      intervalAgeBinnedWeights,
+                      dateIntervals,
+                      personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
+                    )
+                  }
+                } else
+                  // fill with zeroes (or none?)
+                  Seq.fill(dynamicScores.size * dateIntervals.size)(0d)
 
               (
                 Seq(
@@ -186,8 +236,8 @@ trait CalcFeaturesHelper extends BasicHelper {
                   lastVisitMilisDate.getOrElse("")
                 ) ++ (
                   if (hasDeathFile) Seq(isDeadIn6Months) else Nil
-                ) ++ features ++ scoreValues
-              ).mkString(",")
+                  ) ++ features ++ scoreValues ++ dynamicScoreValues
+                ).mkString(",")
             } catch {
               case e: Exception =>
                 logger.error(s"Problem found while processing a person table/csv at line: ${els.mkString(", ")}", e)
@@ -203,6 +253,14 @@ trait CalcFeaturesHelper extends BasicHelper {
             dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
           )
 
+        val dynamicScoreColumnNames =
+          if (hasDeathFile)
+            dynamicScores.flatMap(score =>
+              dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
+            )
+          else
+            Nil
+
         val header = (
           Seq(
             "person_id",
@@ -215,24 +273,302 @@ trait CalcFeaturesHelper extends BasicHelper {
             "visit_end_date"
           ) ++ (
             if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
-            ) ++ featureResults.columnNames ++ scoreColumnNames
-        ).mkString(",")
+            ) ++ featureResults.columnNames ++ scoreColumnNames ++ dynamicScoreColumnNames
+          ).mkString(",")
 
         logger.info(s"Exporting results to '${outputFileName}.")
         AkkaFileSource.writeLines(Source(List(header)).concat(personOutputSource), outputFileName)
       }
+
+      // if an output dynamic score weights file name provided -> export
+      _ <- if (dynamicScoreWeightsOutputFileName.isDefined) {
+        logger.info(s"Exporting dynamic score weights to '${dynamicScoreWeightsOutputFileName.get}.")
+
+        val lines = dynamicScores.zip(dynamicScoreWeights).flatMap { case (dynScore, intervalAgeBinnedWeights) =>
+          val intervalWeightsSorted = intervalAgeBinnedWeights.toSeq.sortBy(_._1)
+          intervalWeightsSorted.flatMap { case (intervalName, ageBinnedWeights) =>
+            ageBinnedWeights.zipWithIndex.map { case (weights, ageBin) =>
+              val els = Seq(dynScore.name, intervalName, ageBin) ++ weights
+              els.mkString(",")
+            }
+          }
+        }
+
+        AkkaFileSource.writeLines(Source(lines.toList), dynamicScoreWeightsOutputFileName.get)
+      } else Future(())
     } yield
       System.exit(0)
   }
 
   private def calcIntervalScores(
+    intervalCategoryIndecesMap: Map[(String, String), Seq[Int]])(
     score: Score,
     dateIntervals: Seq[DayInterval],
+    values: Seq[Option[Any]]
+  ): Seq[Int] =
+    dateIntervals.map { dateInterval =>
+      val intervalName = dateInterval.label
+
+      score.elements.map { element =>
+        val sum = element.categoryNames.map { categoryName =>
+          intervalCategoryIndecesMap.get((intervalName, categoryName)).map { indeces =>
+            indeces.flatMap(values(_)).map(_.asInstanceOf[Int]).sum
+          }.getOrElse(0)
+        }.sum
+
+        if (sum > 0) element.weight else 0
+      }.sum
+    }
+
+  private def calcIntervalDynamicScores(
+    intervalCategoryIndecesMap: Map[(String, String), Seq[Int]])(
+    score: DynamicScore,
+    age: Double,
+    intervalAgeBinnedWeights: Map[String, Seq[Seq[Double]]],
+    dateIntervals: Seq[DayInterval],
+    values: Seq[Option[Any]]
+  ): Seq[Double] = {
+    val ageBin = ageToBin(age)
+
+    dateIntervals.map { dateInterval =>
+      val intervalName = dateInterval.label
+      val ageBinnedWeights = intervalAgeBinnedWeights.get(intervalName).getOrElse(throw new IllegalArgumentException(s"No weights found for the date interval '${intervalName}'."))
+
+      val weights = ageBinnedWeights(ageBin)
+
+      score.categoryNameGroups.zip(weights).map { case (categoryNames, weight) =>
+        val sum = categoryNames.map { categoryName =>
+          intervalCategoryIndecesMap.get((intervalName, categoryName)).map { indeces =>
+            indeces.flatMap(values(_)).map(_.asInstanceOf[Int]).sum
+          }.getOrElse(0)
+        }.sum
+
+        if (sum > 0) weight else 0d
+      }.sum
+    }
+  }
+
+  private def importDynamicScoreWeights(
+    importFileName: String,
+    dynamicScores: Seq[DynamicScore])(
+    implicit materializer: Materializer,
+    executionContext: ExecutionContext
+  ): Future[Seq[Map[String, Seq[Seq[Double]]]]] = {
+    for {
+      scoreNameWeights <- AkkaFileSource.fileSource(importFileName, "\n", true).runWith(Sink.seq).map { lines =>
+        lines.map { line =>
+          val els = line.split(",", -1).map(_.trim)
+
+          val scoreName = els(0)
+          val intervalName = els(1)
+          val ageBin = els(2).toInt
+
+          val weights = els.drop(3).map(_.toDouble)
+
+          (scoreName, (intervalName, ageBin, weights.toSeq))
+        }
+      }
+    } yield {
+      val scoreNameWeightsMap = scoreNameWeights
+        .groupBy(_._1)
+        .map { case (scoreName, values) => (scoreName, values.map(_._2)) }
+
+      dynamicScores.map { score =>
+        val intervalAgeBinWeights = scoreNameWeightsMap.get(score.name).getOrElse(throw new IllegalArgumentException(s"The weights for score ${score.name} not found in "))
+
+        intervalAgeBinWeights
+          .groupBy(_._1)
+          .map { case (intervalName, values) =>
+            val ageBinWeightsMap = values.map { case (_, ageBin, weights) => (ageBin, weights) }.toMap
+
+            val weightsSeq = for (ageBin <- 0 until ageBinsNum) yield {
+              ageBinWeightsMap.get(ageBin).getOrElse(throw new IllegalArgumentException(s"Age bin with an index ${ageBin} not found for dybnamic score '${score.name}' and date interval '${intervalName}'."))
+            }
+            (intervalName, weightsSeq)
+          }
+      }
+    }
+  }
+
+  private def calcDynamicScoreWeights(
+    intervalCategoryIndecesMap: Map[(String, String), Seq[Int]],
+    inputRootPath: String,
+    scores: Seq[DynamicScore],
+    dateIntervals: Seq[DayInterval],
+    personFeatureValues: Map[Int, Seq[Option[Any]]],
+    lastVisitMilisDates: Map[Int, Long],
+    deadIn6MonthsPersonIds: Set[Int],
+    timeZone: TimeZone)(
+    implicit materializer: Materializer,
+    executionContext: ExecutionContext
+  ): Future[Seq[Map[String, Seq[Seq[Double]]]]] = {
+    val inputPath = person.path(inputRootPath)
+
+    for {
+      personIdAgePairs <- personIdAges(inputPath, lastVisitMilisDates, timeZone)
+    } yield {
+      val isDeadAgeFeatureValues = personIdAgePairs
+        .collect { case (personId, Some(age)) => (personId, age) }
+        .flatMap { case (personId, age) =>
+          val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
+
+          personFeatureValues.get(personId).map { features =>
+            (isDeadIn6Months, age, features)
+          }
+        }
+
+      scores.map { score =>
+        dateIntervals.map { dateInterval =>
+          val intervalName = dateInterval.label
+
+          val weights = calcAgeBinnedDynamicIntervalScoreWeights(
+            intervalCategoryIndecesMap,
+            intervalName)(
+            score,
+            isDeadAgeFeatureValues
+          )
+          (intervalName, weights)
+        }.toMap
+      }
+    }
+  }
+
+  private def personIdAges(
+    inputPath: String,
+    lastVisitMilisDates: Map[Int, Long],
+    timeZone: TimeZone)(
+    implicit materializer: Materializer
+  ) = {
+    val personIdAgeSource = csvAsSourceWithTransform(inputPath,
+      header => {
+        val columnIndexMap = header.zipWithIndex.toMap
+
+        def getValue(
+          columnName: Table.person.Value,
+          els: Array[String]
+        ) =
+          els(columnIndexMap.get(columnName.toString).get).trim match {
+            case "" => None
+            case x: String => Some(x)
+          }
+
+        def intValue(columnName: Table.person.Value)
+          (els: Array[String]) =
+          getValue(columnName, els).map(_.toDouble.toInt)
+
+        def dateMilisValue(columnName: Table.person.Value)
+          (els: Array[String]) =
+          getValue(columnName, els).flatMap(AkkaFileSource.asDateMilis(_, inputPath))
+
+        els =>
+          try {
+            val personId = intValue(Table.person.person_id)(els).getOrElse(throw new RuntimeException(s"Person id missing for the row ${els.mkString(",")}"))
+
+            val yearOfBirth = intValue(Table.person.year_of_birth)(els)
+            val monthOfBirth = intValue(Table.person.month_of_birth)(els)
+            val dayOfBirth = intValue(Table.person.day_of_birth)(els)
+
+            val birthDate = yearOfBirth match {
+              case Some(year) => Some(AkkaFileSource.toCalendar(year, monthOfBirth.getOrElse(1), dayOfBirth.getOrElse(1), timeZone).getTime.getTime)
+              case None => dateMilisValue(Table.person.birth_datetime)(els)
+            }
+
+            val lastVisitMilisDate = lastVisitMilisDates.get(personId)
+            if (lastVisitMilisDate.isEmpty)
+              logger.warn(s"No last visit found for the person id ${personId}.")
+            val ageAtLastVisit = (lastVisitMilisDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
+              (endDate - birthDate).toDouble / milisInYear
+            }
+
+            (personId, ageAtLastVisit)
+          } catch {
+            case e: Exception =>
+              logger.error(s"Problem found while processing a person table/csv at line: ${els.mkString(", ")}", e)
+              throw e
+          }
+      }
+    )
+
+    personIdAgeSource.runWith(Sink.seq)
+  }
+
+  private def calcAgeBinnedDynamicIntervalScoreWeights(
+    intervalCategoryIndecesMap: Map[(String, String), Seq[Int]],
+    intervalName: String)(
+    score: DynamicScore,
+    personFeatureValues: Seq[(Boolean, Double, Seq[Option[Any]])] // the boolean indicates whether a person died, Double is the age
+  ): Seq[Seq[Double]] = {
+    val diedFeatureValues = personFeatureValues.filter(_._1).map { case (_, age, featureValues) => (age, featureValues) }
+    val healthyFeatureValues = personFeatureValues.filter(!_._1).map { case (_, age, featureValues) => (age, featureValues) }
+
+    val diedAgeBinCategoryGroupRatios = calcAgeBinCategoryGroupRatios(
+      intervalCategoryIndecesMap,
+      intervalName)(
+      score,
+      diedFeatureValues
+    )
+
+    val healthyAgeBinCategoryGroupRatios = calcAgeBinCategoryGroupRatios(
+      intervalCategoryIndecesMap,
+      intervalName)(
+      score,
+      healthyFeatureValues
+    )
+
+    for (ageBin <- 0 until ageBinsNum) yield {
+      val diedRatios = diedAgeBinCategoryGroupRatios.get(ageBin).getOrElse(Seq.fill(score.categoryNameGroups.size)(0d))
+      val healthyRatios = healthyAgeBinCategoryGroupRatios.get(ageBin).getOrElse(Seq.fill(score.categoryNameGroups.size)(0d))
+
+      diedRatios.zip(healthyRatios).map { case (diedRatio, healthyRatio) =>
+        diedRatio - healthyRatio
+      }
+    }
+  }
+
+  private val ageBinsNum = 3
+
+  private def ageToBin(age: Double) =
+    age match {
+      case x if x < 60 => 0
+      case x if x >= 60 && x <= 80 => 1
+      case x if x > 80 => 2
+    }
+
+  private def calcAgeBinCategoryGroupRatios(
+    intervalCategoryIndecesMap: Map[(String, String), Seq[Int]],
+    intervalName: String)(
+    score: DynamicScore,
+    agePersonFeatureValues: Seq[(Double, Seq[Option[Any]])]
+  ): Map[Int, Seq[Double]] = {
+    val ageBinCategoryGroupOccurrenceFlags: Seq[(Int, Seq[Int])] = agePersonFeatureValues.map { case (age, values) =>
+
+      val flags = score.categoryNameGroups.map { categoryNames =>
+        val sum = categoryNames.map { categoryName =>
+          intervalCategoryIndecesMap.get((intervalName, categoryName)).map { indeces =>
+            indeces.flatMap(values(_)).map(_.asInstanceOf[Int]).sum
+          }.getOrElse(0)
+        }.sum
+
+        if (sum > 0) 1 else 0
+      }
+
+      (ageToBin(age), flags)
+    }
+
+    ageBinCategoryGroupOccurrenceFlags.groupBy(_._1).map { case (ageBin, values) =>
+      val ratios = values.map(_._2).transpose.map { scores =>
+        scores.sum.toDouble / scores.size
+      }
+
+      (ageBin, ratios)
+    }
+  }
+
+  private def getIntervalCategoryFeatureIndecesMap(
+    dateIntervals: Seq[DayInterval],
     featureSpecs: Seq[TableFeatures],
-    columnNames: Seq[String],
-    values: Seq[Option[Any]],
-    withTimeLags: Boolean,
-  ): Seq[Int] = {
+    withTimeLags: Boolean
+  ): Map[(String, String), Seq[Int]] = {
     val dayIntervalCategoryNames = featureSpecs.flatMap { tableFeatures =>
 
       val part1 = dateIntervals.flatMap { dateInterval =>
@@ -255,28 +591,14 @@ trait CalcFeaturesHelper extends BasicHelper {
         }
       }
 
-      val part2 =  if (withTimeLags) Seq.fill(TimeLagStats().outputColumns.size)(None) else Nil
+      val part2 = if (withTimeLags) Seq.fill(TimeLagStats().outputColumns.size)(None) else Nil
 
       part1 ++ part2
     }
 
-    val intervalCategoryIndecesMap = dayIntervalCategoryNames.zipWithIndex
+    dayIntervalCategoryNames.zipWithIndex
       .collect { case (Some(names), index) => (names, index) }.groupBy(_._1)
       .map { case (names, values) => (names, values.map(_._2))}
-
-    dateIntervals.map { dateInterval =>
-      val intervalName = dateInterval.label
-
-      score.elements.map { element =>
-        val sum = element.categoryNames.map { categoryName =>
-          intervalCategoryIndecesMap.get((intervalName, categoryName)).map { indeces =>
-            indeces.flatMap(values(_)).map(_.asInstanceOf[Int]).sum
-          }.getOrElse(0)
-        }.sum
-
-        if (sum > 0) element.weight else 0
-      }.sum
-    }
   }
 
   def calcFeatures(

@@ -9,3 +9,8 @@ case class ScoreElement(
   categoryNames: Seq[String],
   weight: Int
 )
+
+case class DynamicScore(
+  name: String,
+  categoryNameGroups: Seq[Seq[String]]
+)

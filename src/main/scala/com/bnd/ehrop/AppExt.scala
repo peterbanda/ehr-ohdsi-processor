@@ -156,6 +156,22 @@ trait AppExt extends BasicHelper {
     }
   }
 
+  lazy val dynamicScores: Seq[DynamicScore] =
+    if (!config.hasPath("dynamicScores")) {
+      val message = "No 'dynamicScores' provided in application.conf."
+      logger.warn(message)
+      Nil
+    } else {
+      config.getObjectList("dynamicScores").map(configObject =>
+        DynamicScore(
+          configObject.get("name").unwrapped().asInstanceOf[String],
+          configObject.toConfig.getList("categoryNameGroups").map {
+            _.unwrapped().asInstanceOf[util.ArrayList[String]].toSeq
+          }
+        )
+      )
+    }
+
   val timeZoneCode = {
     if (!config.hasPath("timeZone.code")) {
       val message = "No 'timeZone.code' provided in application.conf. Exiting."

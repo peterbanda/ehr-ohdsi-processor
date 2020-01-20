@@ -42,14 +42,32 @@ trait CalcFeatures extends AppExt {
       logger.info(message)
     }
 
+    // check if the weights calculated from dynamic scores should be exported... note that it works only if the death table/input is available
+    val dynamicScoreWeightsOutputFileName = get("o-dyn_score_weights", args)
+
+    if (dynamicScoreWeightsOutputFileName.isDefined) {
+      val message = s"The output file name specified via 'o-dyn_score_weights' detected. Will be exporting the calculated weights of the dynamic scores (if death table is available) to '${dynamicScoreWeightsOutputFileName.get}'."
+      logger.info(message)
+    }
+
+    val dynamicScoreWeightsInputFileName = get("i-dyn_score_weights", args)
+
+    if (dynamicScoreWeightsInputFileName.isDefined) {
+      val message = s"The input file name specified via 'i-dyn_score_weights' detected. Will be importing the calculated weights for the dynamic scores from '${dynamicScoreWeightsInputFileName.get}'."
+      logger.info(message)
+    }
+
     CalcFeaturesService.calcAndExportFeatures(
       withBackslash(inputPath.get),
       tableFeatureSpecs,
       dateIntervals,
       conceptCategories,
       scores,
+      dynamicScores,
       TimeZone.getTimeZone(timeZoneCode),
       withTimeLags,
+      dynamicScoreWeightsOutputFileName,
+      dynamicScoreWeightsInputFileName,
       outputFile
     ) recover {
       case e: Exception =>

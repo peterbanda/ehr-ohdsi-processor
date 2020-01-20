@@ -85,7 +85,12 @@ trait Standardize extends AppExt {
           dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
         )
 
-      featureColumnNames ++ scoreColumnNames
+      val dynamicScoreColumnNames =
+        dynamicScores.flatMap(dynamicScore =>
+          dateIntervals.map { dateInterval => asLowerCaseUnderscore(dynamicScore.name) + "_" + dateInterval.label }
+        )
+
+      featureColumnNames ++ scoreColumnNames ++ dynamicScoreColumnNames
     }
 
     {

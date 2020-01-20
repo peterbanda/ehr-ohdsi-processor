@@ -48,3 +48,10 @@ object ElixhauserCategoriesRead extends App {
 
   AkkaFileSource.writeLines(stringSource, fileName + ".json").map ( _ => System.exit(0) )
 }
+
+//object Lalal extends App with AppExt {
+//  dynamicScores.foreach { score =>
+//    println(score.name)
+//    score.categoryNameGroups.foreach(println(_))
+//  }
+//}
