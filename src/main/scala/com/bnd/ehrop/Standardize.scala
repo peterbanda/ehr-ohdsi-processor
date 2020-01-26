@@ -222,6 +222,7 @@ trait Standardize extends AppExt {
         val columnIndeces = columnNames.map(columnName =>
           columnIndexMap.get(columnName).getOrElse {
             val message = s"Column '${columnName}' in the file '${inputPath}' not found"
+            logger.error(message)
             throw new IllegalArgumentException(message)
           }
         )
@@ -247,6 +248,7 @@ trait Standardize extends AppExt {
           meanStd.map { meanStd =>
             val colIndex = columnIndexMap.get(columnName).getOrElse {
               val message = s"Column '${columnName}' in the file '${inputPath}' not found"
+              logger.error(message)
               throw new IllegalArgumentException(message)
             }
             (colIndex, meanStd)

@@ -209,20 +209,23 @@ trait CalcFeaturesHelper extends BasicHelper {
 
               // calc the dynamic scores
               val dynamicScoreValues =
-                if (ageAtLastVisit.isDefined) {
-                  dynamicScores.zip(dynamicScoreWeights).flatMap { case (score, intervalAgeBinnedWeights) =>
-                    calcIntervalDynamicScores(
-                      intervalCategoryIndecesMap)(
-                      score,
-                      ageAtLastVisit.get,
-                      intervalAgeBinnedWeights,
-                      dateIntervals,
-                      personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
-                    )
-                  }
+                if (dynamicScoreWeights.nonEmpty) {
+                  if (ageAtLastVisit.isDefined) {
+                    dynamicScores.zip(dynamicScoreWeights).flatMap { case (score, intervalAgeBinnedWeights) =>
+                      calcIntervalDynamicScores(
+                        intervalCategoryIndecesMap)(
+                        score,
+                        ageAtLastVisit.get,
+                        intervalAgeBinnedWeights,
+                        dateIntervals,
+                        personFeaturesMap.get(personId).getOrElse(featureResults.notFoundValues)
+                      )
+                    }
+                  } else
+                     // fill with zeroes (or none?)
+                    Seq.fill(dynamicScores.size * dateIntervals.size)(0d)
                 } else
-                  // fill with zeroes (or none?)
-                  Seq.fill(dynamicScores.size * dateIntervals.size)(0d)
+                  Nil
 
               (
                 Seq(
@@ -254,7 +257,7 @@ trait CalcFeaturesHelper extends BasicHelper {
           )
 
         val dynamicScoreColumnNames =
-          if (hasDeathFile)
+          if (dynamicScoreWeights.nonEmpty)
             dynamicScores.flatMap(score =>
               dateIntervals.map { dateInterval => asLowerCaseUnderscore(score.name) + "_" + dateInterval.label }
             )
