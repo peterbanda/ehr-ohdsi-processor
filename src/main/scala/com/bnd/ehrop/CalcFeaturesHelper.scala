@@ -68,21 +68,39 @@ trait CalcFeaturesHelper extends BasicHelper {
         timeZone
       ).map(_.toMap)
 
-      // calc death counts in 6 months and turn death counts into 'hasDied' flags
-      deadIn6MonthsPersonIds <-
+      // calc death counts in 0-6 months and turn them into 'hasDied' flags
+      deadBefore6MonthsPersonIds <-
         if (hasDeathFile) {
-          val dateRangeIn6MonthsMap = dateIntervalsMilis(lastVisitMilisDates, 0, 180)
+          val dateRangeBefore6MonthsMap = dateIntervalsMilis(lastVisitMilisDates, 0, 180)
 
           personIdMilisDateCount(
             tableFile(death),
-            dateRangeIn6MonthsMap,
+            dateRangeBefore6MonthsMap,
             Table.death.death_date.toString,
             "",
             false,
             timeZone
           ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
         } else {
-          logger.warn(s"Death file '${tableFile(death)}' not found. Skipping.")
+          logger.warn(s"Death file '${tableFile(death)}' not found. Skipping generation of 0-6 months 'dead' flags.")
+          Future(Set[Int]())
+        }
+
+      // calc death counts in 6-inf months and turn them into 'hasDied' flags
+      deadAfter6MonthsPersonIds <-
+        if (hasDeathFile) {
+          val dateRangeAfter6MonthsMap = dateIntervalsMilis(lastVisitMilisDates, 180, 1000)
+
+          personIdMilisDateCount(
+            tableFile(death),
+            dateRangeAfter6MonthsMap,
+            Table.death.death_date.toString,
+            "",
+            false,
+            timeZone
+          ).map { case (_, deadCounts) => deadCounts.filter(_._2 > 0).map(_._1).toSet }
+        } else {
+          logger.warn(s"Death file '${tableFile(death)}' not found. Skipping generation of 6-inf months 'dead' flags.")
           Future(Set[Int]())
         }
 
@@ -140,7 +158,7 @@ trait CalcFeaturesHelper extends BasicHelper {
               dateIntervals,
               featureResults.personFeatures.toMap,
               lastVisitMilisDates,
-              deadIn6MonthsPersonIds,
+              deadBefore6MonthsPersonIds,
               timeZone
             )
           else
@@ -193,7 +211,14 @@ trait CalcFeaturesHelper extends BasicHelper {
               val ageAtLastVisit = (lastVisitMilisDate, birthDate).zipped.headOption.map { case (endDate, birthDate) =>
                 (endDate - birthDate).toDouble / milisInYear
               }
-              val isDeadIn6Months = deadIn6MonthsPersonIds.contains(personId)
+
+              val deadFlag =
+                if (deadBefore6MonthsPersonIds.contains(personId))
+                  1
+                else if (deadAfter6MonthsPersonIds.contains(personId))
+                  2
+                else
+                  0 // healthy (didn't die)
 
               val features = personFeatureStringsMap.get(personId).getOrElse(notFoundFeatureValues)
 
@@ -238,9 +263,9 @@ trait CalcFeaturesHelper extends BasicHelper {
                   monthOfBirth.getOrElse(""),
                   lastVisitMilisDate.getOrElse("")
                 ) ++ (
-                  if (hasDeathFile) Seq(isDeadIn6Months) else Nil
-                  ) ++ features ++ scoreValues ++ dynamicScoreValues
-                ).mkString(",")
+                  if (hasDeathFile) Seq(deadFlag) else Nil
+                ) ++ features ++ scoreValues ++ dynamicScoreValues
+              ).mkString(",")
             } catch {
               case e: Exception =>
                 logger.error(s"Problem found while processing a person table/csv at line: ${els.mkString(", ")}", e)
@@ -275,7 +300,7 @@ trait CalcFeaturesHelper extends BasicHelper {
             "month_of_birth",
             "visit_end_date"
           ) ++ (
-            if (hasDeathFile) Seq("died_6_months_after_last_visit") else Nil
+            if (hasDeathFile) Seq("died_after_last_visit") else Nil
             ) ++ featureResults.columnNames ++ scoreColumnNames ++ dynamicScoreColumnNames
           ).mkString(",")
 
