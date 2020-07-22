@@ -32,9 +32,13 @@
 
 ## Build
 
+To create an executable jar with all dependencies run
+
 ```
 sbt assembly
 ```
+
+This will produce a file such as `ehr-ohdsi-processor-assembly-0.4.1.jar`
 
 ## Usage
 
@@ -43,43 +47,43 @@ sbt assembly
 - basic feature generation
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -i=<input_folder> -o=<output_file_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -i=<input_folder> -o=<output_file_name>
 ```
 
 - or without an output file (features.csv in the input folder will be used)
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -i=<input_folder>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -i=<input_folder>
 ```
 
 - note the optional 'mode' option
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=features -i=<input_folder> -o=<output_file_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=features -i=<input_folder> -o=<output_file_name>
 ```
 
 - features generation using custom features, concept categories, or date intervals passed via '-Dconfig.file'
 
 ```
-java  -Xms10g -Xmx10g -Xss1M -Dconfig.file=<my_custom_application.conf> -jar ehr-ohdsi-processor-assembly-0.4.0.jar -i=<input_folder> -o=<output_file_name>
+java  -Xms10g -Xmx10g -Xss1M -Dconfig.file=<my_custom_application.conf> -jar ehr-ohdsi-processor-assembly-0.4.1.jar -i=<input_folder> -o=<output_file_name>
 ```
 
 - features generation with time-lag based features
 
 ```
-java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -with_time_lags= -i=<input_folder> -o=<output_file_name>
+java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -with_time_lags= -i=<input_folder> -o=<output_file_name>
 ```
 
 - features generation with time-lag based features and dynamic scores' weights export
 
 ```
-java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -with_time_lags= -i=<input_folder> -o=<output_file_name> -o-dyn_score_weights=<weight_file_name>
+java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -with_time_lags= -i=<input_folder> -o=<output_file_name> -o-dyn_score_weights=<weight_file_name>
 ```
 
 - features generation with time-lag based features and dynamic scores' weights import
 
 ```
-java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -with_time_lags= -i=<input_folder> -o=<output_file_name> -i-dyn_score_weights=<weight_file_name>
+java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -with_time_lags= -i=<input_folder> -o=<output_file_name> -i-dyn_score_weights=<weight_file_name>
 ```
 
 #### 2. Standardization
@@ -87,31 +91,31 @@ java  -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -with_t
 - standardization with comma delimited input files (no spaces)
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=std -i=<input_files> -o=<output_folder_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=std -i=<input_files> -o=<output_folder_name>
 ```
 
 - or without an output folder (the respective input folders will be used)
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=std -i=<input_files>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=std -i=<input_files>
 ```
 
 - standardization with additional stats output (the generated file is '<input-file>-std.stats')
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=std -ostats= -i=<input_files> -o=<output_folder_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=std -ostats= -i=<input_files> -o=<output_folder_name>
 ```
 
 - standardization using explicitly passed stats as input (means + stds) 
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=std -istats=<input_stats_file> -i=<input_files> -o=<output_folder_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=std -istats=<input_stats_file> -i=<input_files> -o=<output_folder_name>
 ```
 
 - standardization including the time-lag based feautures 
 
 ```
-java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.0.jar -mode=std -with_time_lags= -i=<input_files> -o=<output_folder_name>
+java -Xms10g -Xmx10g -Xss1M -jar ehr-ohdsi-processor-assembly-0.4.1.jar -mode=std -with_time_lags= -i=<input_files> -o=<output_folder_name>
 ```
 
 #### 3. Changing the logging configuration
